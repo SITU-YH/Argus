@@ -1,0 +1,1 @@
+ros2 launch hikvision_ros2_driver standalone.launch.yaml camera_name:=argus_camera
