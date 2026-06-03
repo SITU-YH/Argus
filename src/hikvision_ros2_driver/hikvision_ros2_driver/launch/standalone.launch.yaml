@@ -9,3 +9,7 @@ launch:
       param:
         - name: camera_name
           value: $(var camera_name)
+        
+        # 【新增】让相机驱动去读取刚才写好的内参文件
+        - name: camera_info_url
+          value: "file:///home/styh/argus_ws/src/hikvision_ros2_driver/hikvision_ros2_driver/launch/camera_info.yaml"
