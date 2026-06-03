@@ -1,6 +1,6 @@
 import os
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import IncludeLaunchDescription, TimerAction, ExecuteProcess # <--- 新增 ExecuteProcess
 from launch.launch_description_sources import FrontendLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -43,16 +43,23 @@ def generate_launch_description():
         output='screen'
     )
 
-    # 4. 【新增】发布标定好的外参 TF (雷达 -> 相机)
+    # 4. 发布标定好的外参 TF (雷达 -> 相机)
     static_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='lidar_camera_tf',
         arguments=[
-            '1.171169', '0.811865', '3.516834',                  # 平移 X Y Z
-            '-0.574951', '0.597778', '-0.367678', '-0.420602',   # 旋转 qx qy qz qw
-            'argus_camera', 'livox_frame'                # 父坐标系与子坐标系 (请确保相机的frame_id一致)
+            '0.055899', '-0.514563', '0.013142',                    # 平移 X Y Z (米)
+            '0.202623', '0.191962', '-0.677195', '0.680809',     # 旋转 qx qy qz qw
+            'argus_camera', 'livox_frame'                           # 父坐标系 与 子坐标系
         ]
+    )
+
+    # 5. 【新增】直接运行内参发布 Python 脚本
+    # 注意：请将下面的路径替换为你刚才保存那个 Python 文件的实际绝对路径！
+    camera_info_node = ExecuteProcess(
+        cmd=['python3', '/home/styh/argus_ws/camerainfo.py'], 
+        output='screen'
     )
 
     # 将相机节点用 TimerAction 包裹，延时 3 秒启动
@@ -64,6 +71,7 @@ def generate_launch_description():
     return LaunchDescription([
         livox_node,
         rviz_node,
-        static_tf_node,      # <-- 加入 TF 广播节点
+        static_tf_node,
+        camera_info_node,    # <--- 将内参发布脚本加入启动列表
         delayed_camera_node  
     ])
