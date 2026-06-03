@@ -55,6 +55,7 @@ def generate_launch_description():
         ]
     )
 
+
     # 5. 【新增】直接运行内参发布 Python 脚本
     # 注意：请将下面的路径替换为你刚才保存那个 Python 文件的实际绝对路径！
     camera_info_node = ExecuteProcess(
