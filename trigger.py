@@ -22,6 +22,7 @@ class AngleTriggerNode(Node):
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
             
+            
         # 状态变量
         self.last_trigger_yaw = None
         self.image_count = 0
