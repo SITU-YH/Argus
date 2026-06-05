@@ -35,7 +35,7 @@ def generate_launch_description():
 
    
     # 2. 启动海康相机
-    hik_launch_path = os.path.join(argus_share_dir, 'launch', 'standalone.launch.yaml')
+    hik_launch_path = os.path.join(argus_share_dir, 'launch', 'hik_camera.launch.yaml')
     
     camera_node = IncludeLaunchDescription(
         FrontendLaunchDescriptionSource(hik_launch_path),

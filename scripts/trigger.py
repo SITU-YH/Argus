@@ -18,7 +18,7 @@ class AngleTriggerNode(Node):
         self.trigger_interval_rad = math.radians(self.trigger_interval_deg)
         
         # 图片保存路径 (存在当前终端目录下)
-        self.save_dir = "./trigger_images1"
+        self.save_dir = "./trigger_images"
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
             

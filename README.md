@@ -1,18 +1,62 @@
-Lidar:
-https://github.com/Livox-SDK/livox_ros_driver2
 
-LAN1
+---
 
-Camera:
-https://github.com/sjtu-cyberc3/hikvision_ros2_driver
+#  Argus: Intelligent Lidar-Camera Data Acquisition System
 
-LAN2
+Argus 是一个专为自动驾驶与机器人视觉SLAM研发打造的感知系统。它不仅集成了激光雷达（Livox MID-360）与工业相机（海康威视）的实时建图能力，还内建了**基于里程计里程的角度触发抓拍机制**，极大简化了多传感器数据采集与标定数据的自动化获取流程。
 
 
+##  触发机制原理 (How it Works)
+系统通过订阅 FAST-LIO 的里程计话题 (`/Odometry`) 计算 Yaw 角变化。当检测到旋转增量达到设定值 (`trigger_interval_deg`) 时，触发标志位，并由图像回调函数 (`image_callback`) 截取当前帧，保存至本地路径，完美契合多传感器联合标定与三维重建的数据需求。
 
-ros2 launch hikvision_ros2_driver standalone.launch.yaml camera_name:=argus_camera
-// 调相机参数 f= 60cm
-ros2 run rqt_reconfigure rqt_reconfigure
+##  快速启动 (Quick Start)
 
-///home/styh/argus_ws/src/hikvision_ros2_driver/hikvision_ros2_driver/launch/component.launch.yaml 永久调整
-ros2 launch livox_ros_driver2 rviz_MID360_launch.py
+安装 `livox_ros_driver2`、`hikvision_ros2_driver` 与 `FAST_LIO` 的前提下：
+
+1. **配置**:
+
+    **电机/转盘**: [`BLM系列一体化无刷电机`](https://www.nimotion.cn/product/detail/17) 5mm法兰
+
+    **雷达驱动**: [`livox_ros_driver2`](https://github.com/Livox-SDK/livox_ros_driver2) LAN1
+
+    **相机驱动**: [`hikvision_ros2_driver`](https://github.com/SITU-YH/hikvision_ros2_driver) LAN2
+
+    **FAST_LIO2 ROS2分支**: [`FAST_LIO2`](https://github.com/hku-mars/FAST_LIO/tree/ROS2)
+
+
+2. **安装**:
+```bash
+cd ~/your_ws/src
+git clone https://github.com/SITU-YH/Argus.git
+colcon build --packages-select argus --symlink-install
+source install/setup.bash
+```
+3. **运行**:
+```bash
+ros2 launch argus mapping_trigger.launch.py
+```
+
+系统将自动拉起雷达驱动、相机驱动、FAST-LIO 算法，并启动后台触发抓拍程序。
+
+
+
+##  参数自定义 (Customization)
+
+若需要修改抓拍间隔，直接修改 `scripts/trigger.py` 内部参数：
+
+```python
+# 设置旋转触发阈值
+self.trigger_interval_deg = 30.0 
+```
+
+##  开源协议 (License)
+
+本项目遵循 [GPL-3.0 License](https://www.google.com/search?q=LICENSE) 开源协议，欢迎各位机器人领域的同行共同完善。
+
+
+
+
+
+
+
+

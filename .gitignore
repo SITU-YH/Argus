@@ -1,7 +1,15 @@
+
+
+# 忽略所有编译产物
 build/
 install/
 log/
+
+# 忽略所有临时图片和数据
+*.jpg
+*.png
+trigger_images/
+
+# 忽略 IDE 缓存
 .vscode/
-*.pyc
-__pycache__/
-.DS_Store
+.idea/
