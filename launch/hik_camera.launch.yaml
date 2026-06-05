@@ -1,7 +1,7 @@
 launch:
   - arg:
       name: camera_name
-  
+      
   - node:
       pkg: hikvision_ros2_driver
       exec: hikvision_ros2_driver_node

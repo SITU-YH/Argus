@@ -30,7 +30,15 @@ git clone https://github.com/SITU-YH/Argus.git
 colcon build --packages-select argus --symlink-install
 source install/setup.bash
 ```
+
 3. **运行**:
+
+修改`config/MID360_config.json`中的雷达ip`lidar_configs`以及主机ip`host_net_info`
+
+修改`launch/mapping_trigger.launch.yaml`中的相机名称`camera_name`
+
+修改`config/fast_lio_mid360.yaml`文件中的雷达-IMU外参矩阵`extrinsic_T`, `extrinsic_R` 
+
 ```bash
 ros2 launch argus mapping_trigger.launch.py
 ```
