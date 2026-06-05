@@ -1,19 +1,19 @@
 import os
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction, ExecuteProcess # <--- 新增 ExecuteProcess
+from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import FrontendLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-    # 1. 启动 Livox
     # =================================================================
-    # 获取官方 Livox 驱动在系统中的绝对路径
+    # 🌟 核心：获取包 (argus) 在系统中的绝对路径
     # =================================================================
-    livox_share_dir = get_package_share_directory('livox_ros_driver2')
+    argus_share_dir = get_package_share_directory('argus')
 
-    # 指向官方驱动包里自带的那个 json 文件
-    livox_config_path = os.path.join(livox_share_dir, 'config', 'MID360_config.json')
+    # 1. 启动 Livox
+    # 指向你自己 argus 包里的 config 文件夹
+    livox_config_path = os.path.join(argus_share_dir, 'config', 'MID360_config.json')
     
     livox_node = Node(
         package='livox_ros_driver2',
@@ -27,26 +27,29 @@ def generate_launch_description():
             'publish_freq': 10.0,
             'output_data_type': 0,
             'cmdline_str': 'MID360',
-            'user_config_path': livox_config_path, # <--- 动态指向官方配置
+            'user_config_path': livox_config_path, 
             'frame_id': 'livox_frame'
         }]
     )
 
+
+   
     # 2. 启动海康相机
-    hik_pkg_dir = get_package_share_directory('hikvision_ros2_driver')
-    hik_launch_file = os.path.join(hik_pkg_dir, 'launch', 'standalone.launch.yaml')
+    hik_launch_path = os.path.join(argus_share_dir, 'launch', 'standalone.launch.yaml')
+    
     camera_node = IncludeLaunchDescription(
-        FrontendLaunchDescriptionSource(hik_launch_file),
+        FrontendLaunchDescriptionSource(hik_launch_path),
         launch_arguments={'camera_name': 'argus_camera'}.items()
     )
-
     # 3. 启动 RViz2
-    rviz_config_path = '/home/styh/argus_ws/install/livox_ros_driver2/share/livox_ros_driver2/config/camera_lidar.rviz'
+    # 指向 argus 包里的 rviz 配置文件
+    rviz_config_path = os.path.join(argus_share_dir, 'config', 'camera_lidar.rviz')
+    
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config_path],
+        arguments=['-d', rviz_config_path], 
         output='screen'
     )
 
@@ -57,11 +60,10 @@ def generate_launch_description():
         name='lidar_camera_tf',
         arguments=[
             '0.055899', '-0.514563', '0.013142',                    # 平移 X Y Z (米)
-            '0.202623', '0.191962', '-0.677195', '0.680809',     # 旋转 qx qy qz qw
+            '0.202623', '0.191962', '-0.677195', '0.680809',        # 旋转 qx qy qz qw
             'argus_camera', 'livox_frame'                           # 父坐标系 与 子坐标系
         ]
     )
-
 
     # 5. 运行内参发布 Python 脚本 
     camera_info_node = Node(
@@ -71,7 +73,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    # 将相机节点用 TimerAction 包裹，延时 3 秒启动
+    # 6. 将相机节点用 TimerAction 包裹，延时 3 秒启动
     delayed_camera_node = TimerAction(
         period=3.0,
         actions=[camera_node]
@@ -81,6 +83,6 @@ def generate_launch_description():
         livox_node,
         rviz_node,
         static_tf_node,
-        camera_info_node,    # <--- 将内参发布脚本加入启动列表
+        camera_info_node,    
         delayed_camera_node  
     ])

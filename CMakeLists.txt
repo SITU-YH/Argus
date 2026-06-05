@@ -18,6 +18,7 @@ find_package(cv_bridge REQUIRED)
 # ==========================================================
 install(DIRECTORY
   launch
+  config
   DESTINATION share/${PROJECT_NAME}
 )
 
