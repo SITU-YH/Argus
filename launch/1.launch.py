@@ -7,7 +7,14 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     # 1. 启动 Livox
-    livox_config_path = '/home/styh/argus_ws/install/livox_ros_driver2/share/livox_ros_driver2/config/MID360_config.json'
+    # =================================================================
+    # 获取官方 Livox 驱动在系统中的绝对路径
+    # =================================================================
+    livox_share_dir = get_package_share_directory('livox_ros_driver2')
+
+    # 指向官方驱动包里自带的那个 json 文件
+    livox_config_path = os.path.join(livox_share_dir, 'config', 'MID360_config.json')
+    
     livox_node = Node(
         package='livox_ros_driver2',
         executable='livox_ros_driver2_node',
@@ -20,7 +27,7 @@ def generate_launch_description():
             'publish_freq': 10.0,
             'output_data_type': 0,
             'cmdline_str': 'MID360',
-            'user_config_path': livox_config_path,
+            'user_config_path': livox_config_path, # <--- 动态指向官方配置
             'frame_id': 'livox_frame'
         }]
     )
