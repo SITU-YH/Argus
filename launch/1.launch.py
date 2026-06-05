@@ -56,10 +56,11 @@ def generate_launch_description():
     )
 
 
-    # 5. 【新增】直接运行内参发布 Python 脚本
-    # 注意：请将下面的路径替换为你刚才保存那个 Python 文件的实际绝对路径！
-    camera_info_node = ExecuteProcess(
-        cmd=['python3', '/home/styh/argus_ws/camerainfo.py'], 
+    # 5. 运行内参发布 Python 脚本 
+    camera_info_node = Node(
+        package='argus',
+        executable='camera_info.py',
+        name='camera_info_publisher',
         output='screen'
     )
 
