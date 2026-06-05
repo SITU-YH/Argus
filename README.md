@@ -61,7 +61,7 @@ self.trigger_interval_deg = 30.0
 
 ##  开源协议 (License)
 
-本项目遵循 [GPL-3.0 License](https://www.google.com/search?q=LICENSE) 开源协议，欢迎各位机器人领域的同行共同完善。
+本项目遵循 [Apache-2.0 License](https://www.google.com/search?q=LICENSE) 开源协议，欢迎各位机器人领域的同行共同完善。
 
 
 
