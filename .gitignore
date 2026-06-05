@@ -6,8 +6,7 @@ install/
 log/
 
 # 忽略所有临时图片和数据
-*.jpg
-*.png
+
 trigger_images/
 
 # 忽略 IDE 缓存

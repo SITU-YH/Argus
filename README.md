@@ -37,6 +37,9 @@ ros2 launch argus mapping_trigger.launch.py
 
 系统将自动拉起雷达驱动、相机驱动、FAST-LIO 算法，并启动后台触发抓拍程序。
 
+![触发程序运行](images/triggering.png)
+![触发程序输出](images/trigger_output.png)
+
 
 
 ##  参数自定义 (Customization)
