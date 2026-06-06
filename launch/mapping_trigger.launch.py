@@ -68,13 +68,40 @@ def generate_launch_description():
         output='screen'
     )
 
-    rviz_config_path = os.path.join(argus_share_dir, 'config', 'fast_lio.rviz')
+  # ==========================================================
+    # 5. 启动 RViz2 (修复了文件名拼写)
+    # ==========================================================
+    rviz_config_path = os.path.join(argus_share_dir, 'config', 'fastlio.rviz') 
     
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config_path], # 指向你的 RViz 配置文件
+        arguments=['-d', rviz_config_path],
+        output='screen'
+    )
+
+    # ==========================================================
+    # 6. 发布标定好的外参 TF (雷达 -> 相机) 
+    # ==========================================================
+    static_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='lidar_camera_tf',
+        arguments=[
+            '0.055899', '-0.514563', '0.013142',                    # 平移 X Y Z 
+            '0.202623', '0.191962', '-0.677195', '0.680809',        # 旋转 qx qy qz qw
+            'argus_camera', 'livox_frame'                           # 父子坐标系
+        ]
+    )
+
+    # ==========================================================
+    # 7. 运行内参发布脚本 (解决 Camera 黑屏的核心！)
+    # ==========================================================
+    camera_info_node = Node(
+        package='argus',
+        executable='camera_info.py',
+        name='camera_info_publisher',
         output='screen'
     )
 
@@ -91,10 +118,13 @@ def generate_launch_description():
         actions=[trigger_node]
     )
 
+    
     return LaunchDescription([
         livox_node,
         camera_node,
+        static_tf_node,    
         delayed_fast_lio,
         delayed_trigger,
-        rviz_node
+        rviz_node,
+        camera_info_node         
     ])

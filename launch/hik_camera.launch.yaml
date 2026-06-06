@@ -9,3 +9,7 @@ launch:
       param:
         - name: camera_name
           value: $(var camera_name)
+        - name: exposure_time
+          value: 10000.0   
+        - name: gain
+          value: 8.0

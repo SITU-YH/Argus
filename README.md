@@ -39,6 +39,7 @@ source install/setup.bash
 
 修改`config/fast_lio_mid360.yaml`文件中的雷达-IMU外参矩阵`extrinsic_T`, `extrinsic_R` 
 
+
 ```bash
 ros2 launch argus mapping_trigger.launch.py
 ```
@@ -48,7 +49,11 @@ ros2 launch argus mapping_trigger.launch.py
 ![触发程序运行](images/triggering.png)
 ![触发程序输出](images/trigger_output.png)
 
-
+修改`launch/mapping_trigger.launch.yaml`中的相机参数
+```bash
+# 调整相机参数并同时在rviz中查看画面
+ros2 run rqt_reconfigure rqt_reconfigure
+```
 
 ##  参数自定义 (Customization)
 
