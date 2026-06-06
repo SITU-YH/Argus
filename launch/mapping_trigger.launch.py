@@ -68,6 +68,16 @@ def generate_launch_description():
         output='screen'
     )
 
+    rviz_config_path = os.path.join(argus_share_dir, 'config', 'fast_lio.rviz')
+    
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', rviz_config_path], # 指向你的 RViz 配置文件
+        output='screen'
+    )
+
     # ==========================================================
     # 🌟 系统统筹：延时启动策略
     # ==========================================================
@@ -85,5 +95,6 @@ def generate_launch_description():
         livox_node,
         camera_node,
         delayed_fast_lio,
-        delayed_trigger
+        delayed_trigger,
+        rviz_node
     ])
