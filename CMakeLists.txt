@@ -23,7 +23,7 @@ install(DIRECTORY
 )
 
 install(PROGRAMS
-  scripts/camerainfo.py
+  scripts/camera_info.py
   scripts/trigger.py
   DESTINATION lib/${PROJECT_NAME}
 )
