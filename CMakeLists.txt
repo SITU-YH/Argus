@@ -22,8 +22,8 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+# 移除 camera_info.py，只保留 trigger.py
 install(PROGRAMS
-  scripts/camera_info.py
   scripts/trigger.py
   DESTINATION lib/${PROJECT_NAME}
 )
