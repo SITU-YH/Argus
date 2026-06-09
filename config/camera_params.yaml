@@ -9,11 +9,11 @@
     # 图像像素格式: 
     # "Keep": 保持 MVS 配置的原始格式（推荐，最省带宽）
     # 可选: "RGB8", "BGR8", "Mono8", "BayerRG8", "BayerBG8", "BayerGR8", "BayerGB8"
-    pixel_format: "Keep"
+    pixel_format: "RGB8"
 
     # 相机标定文件路径 (URI格式)
 
-    camera_info_url: "package://hikvision_driver/config/camera_info.yaml"
+    camera_info_url: "package://argus/config/camera_info.yaml"
 
     # 初始曝光时间 (单位: 微秒 us)
     # 范围由具体相机硬件决定，通常为 20.0 - 500000.0

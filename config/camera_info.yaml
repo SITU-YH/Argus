@@ -1,26 +1,34 @@
 image_width: 1920
 image_height: 1200
-camera_name: front_camera
+camera_name: argus_camera
+distortion_model: plumb_bob
+
+# 相机内参矩阵 (K)
 camera_matrix:
   rows: 3
   cols: 3
-  data: [ 1000.0, 0.0, 960.0, 
-          0.0, 1000.0, 600.0, 
+  data: [ 919.204, 0.0, 736.912, 
+          0.0, 919.836, 533.71, 
           0.0, 0.0, 1.0 ]
-distortion_model: plumb_bob
+
+# 畸变参数 (D)
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [ 0.1, -0.05, 0.0, 0.0, 0.0 ]
+  data: [ -0.457345, 0.284055, -0.00220163, 0.00135918, 0.0 ]
+
+# 旋转矩阵 (R) - 单目相机通常为单位阵
 rectification_matrix:
   rows: 3
   cols: 3
   data: [ 1.0, 0.0, 0.0, 
           0.0, 1.0, 0.0, 
           0.0, 0.0, 1.0 ]
+
+# 投影矩阵 (P)
 projection_matrix:
   rows: 3
   cols: 4
-  data: [ 1000.0, 0.0, 960.0, 0.0, 
-          0.0, 1000.0, 600.0, 0.0, 
+  data: [ 919.204, 0.0, 736.912, 0.0, 
+          0.0, 919.836, 533.71, 0.0, 
           0.0, 0.0, 1.0, 0.0 ]
