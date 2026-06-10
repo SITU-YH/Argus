@@ -13,10 +13,7 @@ class AngleTriggerNode(Node):
     def __init__(self):
         super().__init__('angle_trigger_node')
         
-        # ==========================================
-        # 1. 动态读取 FPS (即物理转速 r/s)
-        # ==========================================
-        # 声明一个名为 'fps' 的参数，默认值为 10.0 (相当于 10 r/s)
+        # 1. 动态读取 FPS
         self.declare_parameter('fps', 10.0)
         self.video_fps = self.get_parameter('fps').get_parameter_value().double_value
         
@@ -24,13 +21,23 @@ class AngleTriggerNode(Node):
         self.trigger_interval_deg = 90.0 
         self.trigger_interval_rad = math.radians(self.trigger_interval_deg)
         
-        # 自动创建存放目录
+        # 自动创建存放目录，并【清空历史残留图片】
         self.num_streams = int(360.0 / self.trigger_interval_deg)
         self.base_dir = os.path.expanduser("~/argus_data")
         self.stream_dirs = []
         for i in range(self.num_streams):
             dir_name = os.path.join(self.base_dir, f"stream_{int(i * self.trigger_interval_deg)}")
             os.makedirs(dir_name, exist_ok=True)
+            
+            # ========== 新增：启动时清空该目录下以前拍的旧照片 ==========
+            old_files = glob.glob(os.path.join(dir_name, "*.jpg"))
+            for f in old_files:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            # ============================================================
+            
             self.stream_dirs.append(dir_name)
             
         # 状态变量
@@ -38,21 +45,18 @@ class AngleTriggerNode(Node):
         self.current_stream_idx = 0 
         self.image_counts = [0] * self.num_streams 
         self.trigger_flag = False
-        self.lap_count = 0  # 记录完成的圈数
+        self.lap_count = 0  
         self.bridge = CvBridge()
 
         # --- 订阅话题 ---
         self.odom_sub = self.create_subscription(Odometry, '/Odometry', self.odom_callback, 10)
-        
-        # 相机图像通常需要 Best Effort 策略
         from rclpy.qos import QoSProfile, QoSReliabilityPolicy
         qos = QoSProfile(depth=5, reliability=QoSReliabilityPolicy.BEST_EFFORT)
-        self.image_sub = self.create_subscription(
-            Image, 
-            '/driver/hikvision/argus_camera/image_raw', 
-            self.image_callback, 
-            qos
-        )
+        
+        # 订阅由 YAML 动态命名的新版 Topic
+        self.image_sub = self.create_subscription(Image, '/driver/hikvision/argus_camera/image_raw', self.image_callback, qos)
+
+        self.get_logger().info(f"🚀 全向视频流采集已启动！(已自动清理历史数据)")
         self.get_logger().info(f"⚙️ 当前物理转速/视频帧率设定为: {self.video_fps:.1f} FPS (r/s)")
 
     def odom_callback(self, msg):
@@ -69,7 +73,6 @@ class AngleTriggerNode(Node):
         angle_diff = math.atan2(math.sin(angle_diff), math.cos(angle_diff)) 
 
         if abs(angle_diff) >= self.trigger_interval_rad:
-            # 严格步进基准，消除累积误差
             self.last_trigger_yaw += math.copysign(self.trigger_interval_rad, angle_diff)
             self.trigger_flag = True
 
@@ -85,19 +88,16 @@ class AngleTriggerNode(Node):
             img_name = os.path.join(target_dir, f"frame_{frame_count:05d}.jpg")
             cv2.imwrite(img_name, cv_image)
             
-            # 使用 debug 级别，避免正常运行时终端疯狂刷屏
             self.get_logger().debug(f"抓拍方向 {self.current_stream_idx * 90}°: {img_name}")
             
             self.image_counts[self.current_stream_idx] += 1
             
             # ==========================================
-            # 2. 圈数统计与定时播报
+            # 修改：每完整转完一圈，立刻播报！
             # ==========================================
             if (self.current_stream_idx + 1) % self.num_streams == 0:
                 self.lap_count += 1
-                # 默认每跑 5 圈打印一次提示
-                if self.lap_count % 5 == 0:
-                    self.get_logger().info(f"🔄 系统运行良好，已成功抓拍 {self.lap_count} 圈全向数据...")
+                self.get_logger().info(f"🔄 抓拍中... 已成功完成第 {self.lap_count} 圈全向数据采集！")
             
             self.current_stream_idx = (self.current_stream_idx + 1) % self.num_streams
             self.trigger_flag = False 
@@ -105,19 +105,15 @@ class AngleTriggerNode(Node):
         except Exception as e:
             self.get_logger().error(f"图像转换或保存失败: {e}")
 
-    # ==========================================
-    # 3. 自动合成视频方法
-    # ==========================================
     def generate_all_videos(self):
         self.get_logger().info("======================================")
-        self.get_logger().info(f"🏁 收到停止指令。总计完成 {self.lap_count} 圈。开始按 {self.video_fps:.1f} FPS 合成独立视频流...")
+        self.get_logger().info(f"🏁 收到停止指令。本次有效完成 {self.lap_count} 圈。开始按 {self.video_fps:.1f} FPS 合成视频...")
         self.get_logger().info("======================================")
 
         for i, target_dir in enumerate(self.stream_dirs):
             angle = int(i * self.trigger_interval_deg)
             output_video_path = os.path.join(self.base_dir, f"video_{angle}deg.mp4")
 
-            # 获取所有图片并严格排序
             search_path = os.path.join(target_dir, "*.jpg")
             images = sorted(glob.glob(search_path))
 
@@ -149,10 +145,8 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # 捕获终端的 Ctrl+C 中断信号
         pass
     finally:
-        # 无论如何退出，都执行视频合成
         node.generate_all_videos()
         node.destroy_node()
         if rclpy.ok():
