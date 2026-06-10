@@ -69,7 +69,8 @@ def generate_launch_description():
         package='argus',            
         executable='trigger.py',    
         name='angle_trigger_node',
-        output='screen'
+        output='screen',
+        parameters=[{'fps': 0.5}]  # <--- 直接在这里传入 r/s 或 fps
     )
 
     # ==========================================================
@@ -96,7 +97,7 @@ def generate_launch_description():
         arguments=[
             '0.055899', '-0.514563', '0.013142',
             '0.202623', '0.191962', '-0.677195', '0.680809',
-            'livox_frame', 'argus_camera'  # 父：livox_frame, 子：argus_camera
+            'livox_frame', 'argus_camera_optical_frame'  # 父：livox_frame, 子：argus_camera
         ]
     )
 
