@@ -4,7 +4,7 @@
     camera_name: "argus_camera"
 
     # ROS2 坐标系 ID，推荐使用格式：[camera_name]_optical_frame
-    frame_id: "front_camera_optical_frame"
+    frame_id: "argus_camera_optical_frame"
 
     # 图像像素格式: 
     # "Keep": 保持 MVS 配置的原始格式（推荐，最省带宽）
