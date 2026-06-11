@@ -58,17 +58,33 @@ public:
         // 3. 启动后台异步存图线程
         save_thread_ = std::thread(&AngleTriggerNode::save_thread_func, this);
         
-        // 4. 订阅话题
+        // 4. 🌟 终极并发优化：创建独立的互斥回调组
+        // 这能保证 odom 和 image 真正并行运行，而不会互相阻塞
+        odom_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        image_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        rclcpp::SubscriptionOptions odom_options;
+        odom_options.callback_group = odom_cb_group_;
+        
+        rclcpp::SubscriptionOptions image_options;
+        image_options.callback_group = image_cb_group_;
+
+        // 订阅里程计
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/Odometry", 10, std::bind(&AngleTriggerNode::odom_callback, this, std::placeholders::_1));
+            "/Odometry", 10, 
+            std::bind(&AngleTriggerNode::odom_callback, this, std::placeholders::_1), 
+            odom_options);
             
+        // 订阅相机图像
         rclcpp::QoS qos(5);
         qos.best_effort(); // 匹配海康相机的 QoS
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/driver/hikvision/argus_camera/image_raw", qos, 
-            std::bind(&AngleTriggerNode::image_callback, this, std::placeholders::_1));
+            std::bind(&AngleTriggerNode::image_callback, this, std::placeholders::_1), 
+            image_options);
 
-        RCLCPP_INFO(this->get_logger(), "🚀 [C++工业版] 全向采集已启动！(启用零拷贝 + 多线程异步存盘)");
+        RCLCPP_INFO(this->get_logger(), "🚀 [C++工业版] 全向采集已启动！");
+        RCLCPP_INFO(this->get_logger(), "⚡ 已启用 [多线程物理双核并发] + [内存零拷贝] + [后台异步写盘]");
         RCLCPP_INFO(this->get_logger(), "⚙️ 当前物理转速/视频帧率设定为: %.1f FPS (r/s)", fps_);
     }
 
@@ -102,7 +118,7 @@ private:
         double diff = current_yaw - last_odom_yaw_;
         diff = std::atan2(std::sin(diff), std::cos(diff));
 
-        // 🚀 核心物理规则：强行掰正由掉帧导致的时光倒流
+        // 🚀 核心物理规则：强行掰正由 SLAM 掉帧导致的“时光倒流”
         if (diff < -M_PI / 2.0) {
             diff += 2 * M_PI;
         }
@@ -123,7 +139,7 @@ private:
             pending_captures_ += new_tasks;
             expected_trigger_count_ = current_expected_triggers;
             
-            RCLCPP_INFO(this->get_logger(), "🎯 物理跨越 %.1f° 边界！已向队列派发任务...",
+            RCLCPP_INFO(this->get_logger(), "🎯 物理跨越 %.1f° 边界！已向后台队列派发抓拍任务...",
                         current_expected_triggers * trigger_interval_deg_);
         }
     }
@@ -135,12 +151,12 @@ private:
         std::string target_dir = stream_dirs_[target_idx];
         int frame_count = image_counts_[target_idx];
         
-        // 格式化文件名 (类似于 Python 的 :05d)
+        // 格式化文件名 (例如: frame_00005.jpg)
         std::ostringstream ss;
         ss << target_dir << "/frame_" << std::setw(5) << std::setfill('0') << frame_count << ".jpg";
         std::string filename = ss.str();
 
-        // 【极速闪避】：只把指针和名字扔进队列，唤醒后台线程，然后立马撤退！
+        // 【极速闪避】：这部分在主进程跑，只把指针和名字扔进队列，唤醒后台线程，然后立马撤退！
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             save_queue_.push({msg, filename});
@@ -163,13 +179,13 @@ private:
         pending_captures_--;
     }
 
-    // 后台大管家：专职对付耗时的磁盘 I/O
+    // 后台大管家线程：专职对付耗时的磁盘 I/O
     void save_thread_func() {
         while (true) {
             SaveTask task;
             {
                 std::unique_lock<std::mutex> lock(queue_mutex_);
-                // 深度休眠，直到队列里有活儿，或者系统喊停
+                // 深度休眠，不吃一点CPU，直到队列里有活儿，或者系统喊停
                 cv_.wait(lock, [this]() { return !save_queue_.empty() || stop_thread_; });
                 
                 if (stop_thread_ && save_queue_.empty()) {
@@ -182,8 +198,8 @@ private:
 
             // 在后台执行转换和写盘
             try {
-                // 🌟 终极零拷贝魔法：toCvShare 直接引用原内存，不发生任何拷贝！
-                cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(task.msg, "bgr8");
+                // 🌟 终极零拷贝魔法：传入 "" 表示维持原始格式（单通道灰度或Bayer），节约 CPU
+                cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(task.msg, "");
                 cv::imwrite(task.filename, cv_ptr->image);
             } catch (cv_bridge::Exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "cv_bridge 转换失败: %s", e.what());
@@ -218,7 +234,9 @@ private:
             cv::Mat first_frame = cv::imread(images[0]);
             if (first_frame.empty()) continue;
 
-            cv::VideoWriter writer(output_video, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps_, first_frame.size());
+            // 🌟 容错保护：自动识别图片是单通道还是三通道，防止 VideoWriter 崩溃
+            bool is_color = (first_frame.channels() == 3);
+            cv::VideoWriter writer(output_video, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps_, first_frame.size(), is_color);
 
             RCLCPP_INFO(this->get_logger(), "🎬 正在合成 %d° 视频 (共 %zu 帧) -> %s", angle, images.size(), output_video.c_str());
 
@@ -249,6 +267,10 @@ private:
     int lap_count_ = 0;
     int debug_cnt_ = 0;
 
+    // 回调组
+    rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
+    rclcpp::CallbackGroup::SharedPtr image_cb_group_;
+
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
 
@@ -263,7 +285,13 @@ private:
 int main(int argc, char ** argv) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<AngleTriggerNode>();
-    rclcpp::spin(node);
+    
+    // 🌟 终极多核并发：使用多线程执行器
+    // ROS2 会自动将分配在不同 CallbackGroup 的回调任务扔给不同的 CPU 核心
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
+    
     rclcpp::shutdown();
     return 0;
 }
