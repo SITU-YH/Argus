@@ -15,6 +15,8 @@
   <depend>nav_msgs</depend>
   <depend>cv_bridge</depend>
   
+  <depend>libopencv-dev</depend>
+  
   <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>hikvision_driver</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
