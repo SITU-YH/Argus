@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <map>
 #include <limits>
 #include <future>
 #include <chrono>
@@ -43,6 +44,7 @@ struct SaveTask {
     std::string img_path;
     double yaw_deg;
     int64_t trigger_ns;
+    int stream_idx;
 };
 
 class AngleTriggerNode : public rclcpp::Node {
@@ -77,11 +79,13 @@ public:
             fs::create_directories(dir);
             for (const auto& e : fs::directory_iterator(dir)) {
                 auto ext = e.path().extension();
-                if (ext == ".jpg" || ext == ".json" || ext == ".mp4") fs::remove(e.path());
+                if (ext == ".jpg" || ext == ".mp4") fs::remove(e.path());
+                if (e.path().filename() == "metadata.json") fs::remove(e.path());
             }
             stream_dirs_.push_back(dir);
             image_counts_.push_back(0);
         }
+        stream_metadata_.resize(num_streams_);
 
         // 后台存图线程
         save_thread_ = std::thread(&AngleTriggerNode::save_loop, this);
@@ -117,7 +121,8 @@ public:
         }
         cv_.notify_all();
         if (save_thread_.joinable()) save_thread_.join();
-        RCLCPP_INFO(this->get_logger(), "🛑 节点析构，开始合成视频 (最长等待120秒)...");
+        RCLCPP_INFO(this->get_logger(), "🛑 节点析构，写出元数据 + 合成视频...");
+        write_metadata();
         auto video_future = std::async(std::launch::async, &AngleTriggerNode::generate_videos, this);
         if (video_future.wait_for(std::chrono::seconds(120)) == std::future_status::timeout) {
             RCLCPP_ERROR(this->get_logger(), "⏰ 视频合成超时，跳过");
@@ -132,6 +137,7 @@ private:
 
         if (first_odom_) {
             last_yaw_ = yaw;
+            last_odom_stamp_ = msg->header.stamp;
             first_odom_ = false;
             return;
         }
@@ -149,29 +155,53 @@ private:
         if (std::abs(diff) > 3.0) {
             RCLCPP_WARN(this->get_logger(), "⚠️ 跳变 %.0f° 跳过", diff * RAD_TO_DEG);
             last_yaw_ = yaw;
+            last_odom_stamp_ = msg->header.stamp;
             return;
         }
 
         if (std::abs(diff) < 1.5) dir_ema_ = 0.85 * dir_ema_ + 0.15 * diff;
 
+        // 🌟 保存累加前的值 + 上一帧时间戳，用于线性插值
+        double acc_before = accumulated_;
+        rclcpp::Time odom_prev_stamp = last_odom_stamp_;
         accumulated_ += diff;
         last_yaw_ = yaw;
+        last_odom_stamp_ = msg->header.stamp;
 
         int new_trig = static_cast<int>(std::abs(accumulated_) / interval_rad_);
         for (int k = expected_trig_ + 1; k <= new_trig; ++k) {
             int stream = k % num_streams_;
+
+            // 🌟 线性插值：精确估算到达目标角度那一刻的时间
+            double target_abs = k * interval_rad_;
+            double acc_before_abs = std::abs(acc_before);
+            double acc_after_abs  = std::abs(accumulated_);
+            rclcpp::Time interp_stamp = msg->header.stamp;  // fallback
+
+            if (acc_after_abs > acc_before_abs) {
+                double frac = (target_abs - acc_before_abs) / (acc_after_abs - acc_before_abs);
+                if (frac >= 0.0 && frac <= 1.0) {
+                    rclcpp::Time cur_stamp = msg->header.stamp;
+                    double dt = (cur_stamp - odom_prev_stamp).seconds();
+                    interp_stamp = odom_prev_stamp + rclcpp::Duration::from_seconds(frac * dt);
+                }
+            }
+
             TriggerRequest req;
-            req.trigger_time = msg->header.stamp;
+            req.trigger_time = interp_stamp;
             req.yaw_deg = k * interval_deg_;
             req.stream_idx = stream;
-            
+
             // 🌟 必须加锁！保护挂起任务队列
             {
                 std::lock_guard<std::mutex> lock(pending_mtx_);
                 pending_.push_back(req);
             }
 
-            RCLCPP_INFO(this->get_logger(), "🎯 触发 %.0f° → stream_%d", req.yaw_deg, stream);
+            RCLCPP_INFO(this->get_logger(), "🎯 触发 %.0f° → stream_%d | 插值=%.0f%%",
+                       req.yaw_deg, stream,
+                       (acc_after_abs > acc_before_abs) ?
+                       100.0 * (target_abs - acc_before_abs) / (acc_after_abs - acc_before_abs) : 100.0);
         }
         expected_trig_ = new_trig;
 
@@ -207,12 +237,13 @@ private:
                 int n = image_counts_[req.stream_idx]++;
                 std::ostringstream ss;
                 ss << stream_dirs_[req.stream_idx] << "/frame_" << std::setw(5) << std::setfill('0') << n;
-                
+
                 SaveTask t;
                 t.img_msg = best->msg;
                 t.img_path = ss.str() + ".jpg";
                 t.yaw_deg = req.yaw_deg;
                 t.trigger_ns = req.trigger_time.nanoseconds();
+                t.stream_idx = req.stream_idx;
                 {
                     std::lock_guard<std::mutex> lk(queue_mtx_);
                     save_queue_.push(t);
@@ -230,12 +261,13 @@ private:
                 int n = image_counts_[req.stream_idx]++;
                 std::ostringstream ss;
                 ss << stream_dirs_[req.stream_idx] << "/frame_" << std::setw(5) << std::setfill('0') << n;
-                
+
                 SaveTask t;
                 t.img_msg = best->msg;
                 t.img_path = ss.str() + ".jpg";
                 t.yaw_deg = req.yaw_deg;
                 t.trigger_ns = req.trigger_time.nanoseconds();
+                t.stream_idx = req.stream_idx;
                 {
                     std::lock_guard<std::mutex> lk(queue_mtx_);
                     save_queue_.push(t);
@@ -280,10 +312,13 @@ private:
                 
                 cv::imwrite(t.img_path, img_to_save);
 
-                // JSON 元数据
-                std::string jp = t.img_path.substr(0, t.img_path.size()-4) + ".json";
-                std::ofstream jf(jp);
-                jf << "{\"yaw_deg\":" << t.yaw_deg << ",\"trigger_ns\":" << t.trigger_ns << "}\n";
+                // 🌟 收集元数据到内存，退出时统一写一个 metadata.json
+                std::string fname = fs::path(t.img_path).filename().string();
+                std::ostringstream meta;
+                meta << "{\"frame\":\"" << fname
+                     << "\",\"yaw_deg\":" << t.yaw_deg
+                     << ",\"trigger_ns\":" << t.trigger_ns << "}";
+                stream_metadata_[t.stream_idx].push_back(meta.str());
             } catch (std::exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "存盘失败: %s", e.what());
             }
@@ -294,41 +329,44 @@ private:
     void generate_videos() {
         RCLCPP_INFO(this->get_logger(), "🎬 合成视频 (共%d圈)...", laps_);
         for (int i = 0; i < num_streams_; ++i) {
-            // 收集 (图片路径, 时间戳) 并按时间排序
+            // 收集图片路径并按时间排序
             std::vector<std::pair<std::string, int64_t>> frames;
             for (const auto& e : fs::directory_iterator(stream_dirs_[i])) {
-                if (e.path().extension() == ".jpg") {
-                    // 读取对应的 JSON 获取真实触发时间
-                    std::string json_path = e.path().string();
-                    json_path.replace(json_path.size() - 4, 4, ".json");
-                    int64_t ts = 0;
-                    std::ifstream jf(json_path);
-                    if (jf.is_open()) {
-                        std::string line;
-                        std::getline(jf, line);
-                        // 解析 "trigger_ns":123456789
-                        auto pos = line.find("\"trigger_ns\":");
-                        if (pos != std::string::npos) {
-                            ts = std::stoll(line.substr(pos + 13));
-                        }
-                    }
-                    frames.emplace_back(e.path().string(), ts);
-                }
+                if (e.path().extension() == ".jpg")
+                    frames.emplace_back(e.path().string(), 0);
             }
             if (frames.empty()) continue;
 
+            // 从 metadata.json 读取时间戳
+            std::string meta_path = stream_dirs_[i] + "/metadata.json";
+            std::map<std::string, int64_t> ts_map;
+            std::ifstream mf(meta_path);
+            if (mf.is_open()) {
+                std::string line;
+                while (std::getline(mf, line)) {
+                    auto pos_f = line.find("\"frame\":\"");
+                    auto pos_t = line.find("\"trigger_ns\":");
+                    if (pos_f != std::string::npos && pos_t != std::string::npos) {
+                        std::string fname = line.substr(pos_f + 9, line.find("\"", pos_f + 9) - pos_f - 9);
+                        int64_t ts = std::stoll(line.substr(pos_t + 13));
+                        ts_map[fname] = ts;
+                    }
+                }
+            }
+
+            for (auto& [path, ts] : frames) {
+                std::string fname = fs::path(path).filename().string();
+                auto it = ts_map.find(fname);
+                if (it != ts_map.end()) ts = it->second;
+            }
             std::sort(frames.begin(), frames.end(),
                       [](const auto& a, const auto& b) { return a.second < b.second; });
 
-            // 🌟 根据真实时间戳计算实际 FPS
-            double real_fps = fps_;  // fallback
-            if (frames.size() >= 2) {
-                int64_t first_ts = frames.front().second;
-                int64_t last_ts  = frames.back().second;
-                double total_sec = (last_ts - first_ts) / 1e9;
-                if (total_sec > 0.01) {
-                    real_fps = (frames.size() - 1) / total_sec;
-                }
+            // 根据真实时间戳计算实际 FPS
+            double real_fps = fps_;
+            if (frames.size() >= 2 && frames.front().second > 0 && frames.back().second > 0) {
+                double total_sec = (frames.back().second - frames.front().second) / 1e9;
+                if (total_sec > 0.01) real_fps = (frames.size() - 1) / total_sec;
             }
 
             cv::Mat first = cv::imread(frames[0].first);
@@ -345,12 +383,29 @@ private:
         }
     }
 
+    // ─── 写出每个 stream 的 metadata.json ───
+    void write_metadata() {
+        for (int i = 0; i < num_streams_; ++i) {
+            if (stream_metadata_[i].empty()) continue;
+            std::string path = stream_dirs_[i] + "/metadata.json";
+            std::ofstream of(path);
+            of << "[\n";
+            for (size_t j = 0; j < stream_metadata_[i].size(); ++j) {
+                of << "  " << stream_metadata_[i][j];
+                if (j + 1 < stream_metadata_[i].size()) of << ",";
+                of << "\n";
+            }
+            of << "]\n";
+            RCLCPP_INFO(this->get_logger(), "📋 metadata.json → %s (%zu条)", path.c_str(), stream_metadata_[i].size());
+        }
+    }
     // ─── 成员变量 ───
     double fps_, interval_deg_, interval_rad_;
     int num_streams_;
     std::string base_dir_;
     std::vector<std::string> stream_dirs_;
     std::vector<int> image_counts_;
+    std::vector<std::vector<std::string>> stream_metadata_;  // 每条一行 JSON
     
     cv::RotateFlags rotate_code_;
     bool do_rotate_ = false;
@@ -358,6 +413,7 @@ private:
     double accumulated_ = 0, last_yaw_ = 0, dir_ema_ = 0;
     bool first_odom_ = true;
     int expected_trig_ = 0, dbg_ = 0, laps_ = 0;
+    rclcpp::Time last_odom_stamp_;  // 上一帧里程计时间戳，用于插值
 
     std::deque<ImageFrame> buffer_;
     std::deque<TriggerRequest> pending_;
