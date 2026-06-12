@@ -63,7 +63,20 @@ def generate_launch_description():
     )
 
     # ==========================================================
-    # 4. 启动触发拍照节点 
+    # 4. 启动图像旋转节点（将原始图像逆时针旋转90°摆正）
+    # ==========================================================
+    rotate_node = Node(
+        package='argus',
+        executable='image_rotate_node',
+        name='image_rotate_node',
+        output='screen',
+        parameters=[{
+            'rotate_code': 2  # OpenCV: 2=逆时针90°(摆正顺时针90°偏转的相机)
+        }]
+    )
+
+    # ==========================================================
+    # 6. 启动触发拍照节点
     # ==========================================================
     trigger_node = Node(
         package='argus',
@@ -77,7 +90,7 @@ def generate_launch_description():
     )
 
     # ==========================================================
-    # 5. 启动 RViz2
+    # 7. 启动 RViz2
     # ==========================================================
     rviz_config_path = os.path.join(argus_share_dir, 'config', 'fastlio.rviz') 
     
@@ -90,7 +103,7 @@ def generate_launch_description():
     )
 
     # ==========================================================
-    # 6. 发布标定好的外参 TF (雷达 -> 相机) 
+    # 8. 发布标定好的外参 TF (雷达 -> 相机) 
     # ==========================================================
     # 请确保 frame_id 和这里的一致
     static_tf_node = Node(
@@ -120,7 +133,8 @@ def generate_launch_description():
     return LaunchDescription([
         livox_node,
         camera_node,
-        static_tf_node,    
+        static_tf_node,
+        rotate_node,
         delayed_fast_lio,
         delayed_trigger,
         rviz_node

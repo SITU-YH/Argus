@@ -58,7 +58,7 @@ def generate_launch_description():
         arguments=[
             '0.055899', '-0.514563', '0.013142',                    
             '0.202623', '0.191962', '-0.677195', '0.680809',        
-            'livox_frame', 'argus_camera' # 父坐标系: livox_frame, 子坐标系: argus_camera
+            'livox_frame', 'argus_camera_optical_frame' # 父坐标系: livox_frame, 子坐标系: argus_camera_optical_frame
         ]
     )
 
@@ -68,10 +68,22 @@ def generate_launch_description():
         actions=[camera_node]
     )
 
+    # 6. 图像旋转节点 (摆正安装偏移)
+    rotate_node = Node(
+        package='argus',
+        executable='image_rotate_node',
+        name='image_rotate_node',
+        output='screen',
+        parameters=[{
+            'rotate_code': 2  # OpenCV: 2=逆时针90°(摆正顺时针90°偏转的相机)
+        }]
+    )
+
     return LaunchDescription([
         livox_node,
         rviz_node,
         static_tf_node,
-        delayed_camera_node  
+        delayed_camera_node,
+        rotate_node
         # 注意：camera_info_node 已被彻底删除
     ])

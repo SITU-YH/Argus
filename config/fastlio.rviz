@@ -6,7 +6,6 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /TF1
         - /Image1
         - /Image1/Topic1
       Splitter Ratio: 0.5
@@ -28,7 +27,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: CloudRegistered
+    SyncSource: CloudMap
 Visualization Manager:
   Class: ""
   Displays:
@@ -39,10 +38,6 @@ Visualization Manager:
         All Enabled: true
         argus_camera_optical_frame:
           Value: true
-        body:
-          Value: true
-        camera_init:
-          Value: true
         livox_frame:
           Value: true
       Marker Scale: 1
@@ -51,9 +46,7 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        camera_init:
-          body:
-            {}
+        {}
       Update Interval: 0
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -194,8 +187,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 11.295680046081543
-        Min Value: -1.034685730934143
+        Max Value: -9999
+        Min Value: 9999
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -237,7 +230,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /driver/hikvision/argus_camera/image_raw
+        Value: /driver/hikvision/argus_camera/image_rotated
       Value: true
   Enabled: true
   Global Options:
