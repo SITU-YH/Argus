@@ -62,21 +62,10 @@ def generate_launch_description():
         parameters=[fast_lio_config_path]
     )
 
-    # ==========================================================
-    # 4. 启动图像旋转节点（将原始图像逆时针旋转90°摆正）
-    # ==========================================================
-    rotate_node = Node(
-        package='argus',
-        executable='image_rotate_node',
-        name='image_rotate_node',
-        output='screen',
-        parameters=[{
-            'rotate_code': 2  # OpenCV: 2=逆时针90°(摆正顺时针90°偏转的相机)
-        }]
-    )
+    # 注意：图像旋转已内迁至 angle_trigger_node，不再需要独立的 image_rotate_node
 
     # ==========================================================
-    # 6. 启动触发拍照节点
+    # 4. 启动触发拍照节点 (内含旋转功能)
     # ==========================================================
     trigger_node = Node(
         package='argus',
@@ -84,8 +73,9 @@ def generate_launch_description():
         name='angle_trigger_node',
         output='screen',
         parameters=[{
-            'fps': 10.0,                  # 转速/视频帧率 (r/s)
-            'trigger_interval_deg': 90.0  # 触发拍照的角度间隔 (度)
+            'fps': 10.0,
+            'trigger_interval_deg': 90.0,
+            'rotate_code': 2  # <--- 把旋转指令直接传给 trigger 节点！
         }]
     )
 
@@ -134,7 +124,6 @@ def generate_launch_description():
         livox_node,
         camera_node,
         static_tf_node,
-        rotate_node,
         delayed_fast_lio,
         delayed_trigger,
         rviz_node

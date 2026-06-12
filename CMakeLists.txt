@@ -11,7 +11,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclpy REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -26,26 +25,20 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-# trigger.py 已删除，统一使用 C++ 版本的 angle_trigger_node
+# trigger.py 已删除，旋转功能已内迁至 angle_trigger_node，不再需要独立的 image_rotate_node
 
 # ==========================================================
 # 2. 编译 C++ 源码专用区域
 # ==========================================================
 
-# 声明可执行文件，指向我们刚写的 cpp 文件
 add_executable(angle_trigger_node src/angle_trigger_node.cpp)
 
-# 图像旋转节点 — 将原始图像旋转后重新发布 + 存盘时摆正
-add_executable(image_rotate_node src/image_rotate_node.cpp)
-
-# 包含头文件目录 (将 OpenCV 加进来)
 target_include_directories(angle_trigger_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
 )
 
-# 链接 ROS2 的核心库
 ament_target_dependencies(angle_trigger_node
   rclcpp
   sensor_msgs
@@ -53,30 +46,9 @@ ament_target_dependencies(angle_trigger_node
   cv_bridge
 )
 
-# 链接 OpenCV 的动态库
 target_link_libraries(angle_trigger_node ${OpenCV_LIBRARIES})
 
-# 安装编译好的 C++ 节点
 install(TARGETS angle_trigger_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-# ---- image_rotate_node ----
-target_include_directories(image_rotate_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-  ${OpenCV_INCLUDE_DIRS}
-)
-
-ament_target_dependencies(image_rotate_node
-  rclcpp
-  sensor_msgs
-  cv_bridge
-)
-
-target_link_libraries(image_rotate_node ${OpenCV_LIBRARIES})
-
-install(TARGETS image_rotate_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

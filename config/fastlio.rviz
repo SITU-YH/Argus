@@ -38,6 +38,10 @@ Visualization Manager:
         All Enabled: true
         argus_camera_optical_frame:
           Value: true
+        body:
+          Value: true
+        camera_init:
+          Value: true
         livox_frame:
           Value: true
       Marker Scale: 1
@@ -46,7 +50,9 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        {}
+        camera_init:
+          body:
+            {}
       Update Interval: 0
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -119,8 +125,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 10.772597312927246
-        Min Value: -1.00001859664917
+        Max Value: 2.596079111099243
+        Min Value: -0.9212762117385864
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -187,8 +193,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: -9999
-        Min Value: 9999
+        Max Value: 6.853509902954102
+        Min Value: -1.0691243410110474
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -230,7 +236,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /driver/hikvision/argus_camera/image_rotated
+        Value: /driver/hikvision/argus_camera/image_raw
       Value: true
   Enabled: true
   Global Options:

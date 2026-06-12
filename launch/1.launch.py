@@ -68,22 +68,11 @@ def generate_launch_description():
         actions=[camera_node]
     )
 
-    # 6. 图像旋转节点 (摆正安装偏移)
-    rotate_node = Node(
-        package='argus',
-        executable='image_rotate_node',
-        name='image_rotate_node',
-        output='screen',
-        parameters=[{
-            'rotate_code': 2  # OpenCV: 2=逆时针90°(摆正顺时针90°偏转的相机)
-        }]
-    )
+    # 注意：图像旋转已内迁至 angle_trigger_node，不再需要独立的 image_rotate_node
 
     return LaunchDescription([
         livox_node,
         rviz_node,
         static_tf_node,
-        delayed_camera_node,
-        rotate_node
-        # 注意：camera_info_node 已被彻底删除
+        delayed_camera_node
     ])

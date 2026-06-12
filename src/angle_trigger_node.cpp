@@ -18,6 +18,8 @@
 #include <sstream>
 #include <algorithm>
 #include <limits>
+#include <future>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -57,6 +59,16 @@ public:
         interval_rad_ = interval_deg_ * DEG_TO_RAD;
         num_streams_ = static_cast<int>(std::ceil(360.0 / interval_deg_));
 
+        // 🌟 新增：读取旋转参数，直接在此节点后台完成旋转
+        this->declare_parameter("rotate_code", 2);
+        int code = this->get_parameter("rotate_code").as_int();
+        if (code >= 0 && code <= 2) {
+            rotate_code_ = static_cast<cv::RotateFlags>(code);
+            do_rotate_ = true;
+        } else {
+            do_rotate_ = false; // 不做旋转
+        }
+
         // 创建存储目录
         const char* home = getenv("HOME");
         base_dir_ = home ? std::string(home) + "/argus_data" : "./argus_data";
@@ -65,7 +77,7 @@ public:
             fs::create_directories(dir);
             for (const auto& e : fs::directory_iterator(dir)) {
                 auto ext = e.path().extension();
-                if (ext == ".jpg" || ext == ".json") fs::remove(e.path());
+                if (ext == ".jpg" || ext == ".json" || ext == ".mp4") fs::remove(e.path());
             }
             stream_dirs_.push_back(dir);
             image_counts_.push_back(0);
@@ -74,17 +86,28 @@ public:
         // 后台存图线程
         save_thread_ = std::thread(&AngleTriggerNode::save_loop, this);
 
+        // 🌟 重新启用：回调组 (CallbackGroup) 分离里程计与图像线程
+        odom_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        image_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        
+        rclcpp::SubscriptionOptions odom_options;
+        odom_options.callback_group = odom_cb_group_;
+        rclcpp::SubscriptionOptions image_options;
+        image_options.callback_group = image_cb_group_;
+
         // 订阅
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
             "/Odometry", 10,
-            [this](nav_msgs::msg::Odometry::SharedPtr m) { odom_cb(m); });
+            [this](nav_msgs::msg::Odometry::SharedPtr m) { odom_cb(m); }, odom_options);
 
         rclcpp::QoS qos = rclcpp::SensorDataQoS();
+        // 🌟 核心修改：直接订阅原始的 image_raw，不要用中间节点了！
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/driver/hikvision/argus_camera/image_rotated", qos,
-            [this](sensor_msgs::msg::Image::ConstSharedPtr m) { image_cb(m); });
+            "/driver/hikvision/argus_camera/image_raw", qos,
+            [this](sensor_msgs::msg::Image::ConstSharedPtr m) { image_cb(m); }, image_options);
 
-        RCLCPP_INFO(this->get_logger(), "🚀 全向采集启动 | 间隔=%.1f° | 流数=%d", interval_deg_, num_streams_);
+        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(高阶版)启动 | 间隔=%.1f° | 流数=%d", interval_deg_, num_streams_);
+        if (do_rotate_) RCLCPP_INFO(this->get_logger(), "🔄 图像将在后台进行无阻塞旋转 (Code: %d)", code);
     }
 
     ~AngleTriggerNode() {
@@ -94,7 +117,11 @@ public:
         }
         cv_.notify_all();
         if (save_thread_.joinable()) save_thread_.join();
-        generate_videos();
+        RCLCPP_INFO(this->get_logger(), "🛑 节点析构，开始合成视频 (最长等待120秒)...");
+        auto video_future = std::async(std::launch::async, &AngleTriggerNode::generate_videos, this);
+        if (video_future.wait_for(std::chrono::seconds(120)) == std::future_status::timeout) {
+            RCLCPP_ERROR(this->get_logger(), "⏰ 视频合成超时，跳过");
+        }
     }
 
 private:
@@ -110,12 +137,10 @@ private:
         }
 
         double diff = yaw - last_yaw_;
-        diff = std::atan2(std::sin(diff), std::cos(diff)); // [-π, π]
+        diff = std::atan2(std::sin(diff), std::cos(diff));
 
-        // 大跳变消歧义：用近期方向记忆判断是边界穿越还是真跳变
         if (std::abs(diff) > 2.5) {
             if (dir_ema_ > 0.05 && diff < 0) {
-                // 一直在 CCW，大负数跳变 → 穿越 +π 边界
                 diff += 2.0 * PI;
             } else if (dir_ema_ < -0.05 && diff > 0) {
                 diff -= 2.0 * PI;
@@ -127,7 +152,6 @@ private:
             return;
         }
 
-        // 用小步更新方向 EMA
         if (std::abs(diff) < 1.5) dir_ema_ = 0.85 * dir_ema_ + 0.15 * diff;
 
         accumulated_ += diff;
@@ -135,12 +159,17 @@ private:
 
         int new_trig = static_cast<int>(std::abs(accumulated_) / interval_rad_);
         for (int k = expected_trig_ + 1; k <= new_trig; ++k) {
-            int stream = k % num_streams_; // k*interval → 对应方向: 90°→stream_90, 360°→stream_0
+            int stream = k % num_streams_;
             TriggerRequest req;
             req.trigger_time = msg->header.stamp;
             req.yaw_deg = k * interval_deg_;
             req.stream_idx = stream;
-            pending_.push_back(req);
+            
+            // 🌟 必须加锁！保护挂起任务队列
+            {
+                std::lock_guard<std::mutex> lock(pending_mtx_);
+                pending_.push_back(req);
+            }
 
             RCLCPP_INFO(this->get_logger(), "🎯 触发 %.0f° → stream_%d", req.yaw_deg, stream);
         }
@@ -153,7 +182,7 @@ private:
 
     // ─── 图像回调 ───
     void image_cb(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
-        // 环形缓冲
+        // 环形缓冲操作
         ImageFrame f{msg, msg->header.stamp};
         buffer_.push_back(f);
         auto now = this->now();
@@ -161,7 +190,9 @@ private:
             buffer_.pop_front();
         while (buffer_.size() > 30) buffer_.pop_front();
 
-        // 匹配触发请求
+        // 🌟 加锁访问 pending_
+        std::lock_guard<std::mutex> pending_lock(pending_mtx_);
+        
         while (!pending_.empty()) {
             auto& req = pending_.front();
 
@@ -175,35 +206,8 @@ private:
             if (best && best_d < 0.3) {
                 int n = image_counts_[req.stream_idx]++;
                 std::ostringstream ss;
-                ss << stream_dirs_[req.stream_idx] << "/frame_"
-                   << std::setw(5) << std::setfill('0') << n;
-                std::string base = ss.str();
-
-                SaveTask t;
-                t.img_msg = best->msg;
-                t.img_path = base + ".jpg";
-                t.yaw_deg = req.yaw_deg;
-                t.trigger_ns = req.trigger_time.nanoseconds();
-                {
-                    std::lock_guard<std::mutex> lk(queue_mtx_);
-                    save_queue_.push(t);
-                }
-                cv_.notify_one();
-
-                RCLCPP_INFO(this->get_logger(), "📸 [%.0f°] %s (Δt=%.0fms)",
-                    req.yaw_deg, t.img_path.c_str(), best_d * 1000);
-
-                if ((req.stream_idx + 1) % num_streams_ == 0) {
-                    laps_++;
-                    RCLCPP_INFO(this->get_logger(), "🟢 第%d圈完成!", laps_);
-                }
-                pending_.pop_front();
-            } else if (best && (now - req.trigger_time).seconds() > 1.0) {
-                // 超时兜底
-                int n = image_counts_[req.stream_idx]++;
-                std::ostringstream ss;
-                ss << stream_dirs_[req.stream_idx] << "/frame_"
-                   << std::setw(5) << std::setfill('0') << n;
+                ss << stream_dirs_[req.stream_idx] << "/frame_" << std::setw(5) << std::setfill('0') << n;
+                
                 SaveTask t;
                 t.img_msg = best->msg;
                 t.img_path = ss.str() + ".jpg";
@@ -214,7 +218,30 @@ private:
                     save_queue_.push(t);
                 }
                 cv_.notify_one();
-                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配 [%.0f°] Δt=%.0fms", req.yaw_deg, best_d * 1000);
+
+                RCLCPP_INFO(this->get_logger(), "📸 [%.0f°] 匹配帧 (Δt=%.0fms)", req.yaw_deg, best_d * 1000);
+
+                if ((req.stream_idx + 1) % num_streams_ == 0) {
+                    laps_++;
+                    RCLCPP_INFO(this->get_logger(), "🟢 第%d圈完成!", laps_);
+                }
+                pending_.pop_front();
+            } else if (best && (now - req.trigger_time).seconds() > 1.0) {
+                int n = image_counts_[req.stream_idx]++;
+                std::ostringstream ss;
+                ss << stream_dirs_[req.stream_idx] << "/frame_" << std::setw(5) << std::setfill('0') << n;
+                
+                SaveTask t;
+                t.img_msg = best->msg;
+                t.img_path = ss.str() + ".jpg";
+                t.yaw_deg = req.yaw_deg;
+                t.trigger_ns = req.trigger_time.nanoseconds();
+                {
+                    std::lock_guard<std::mutex> lk(queue_mtx_);
+                    save_queue_.push(t);
+                }
+                cv_.notify_one();
+                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配超时 [%.0f°] Δt=%.0fms", req.yaw_deg, best_d * 1000);
                 pending_.pop_front();
             } else {
                 break;
@@ -235,14 +262,28 @@ private:
             }
 
             try {
-                cv_bridge::CvImageConstPtr cv = cv_bridge::toCvShare(t.img_msg, "");
-                cv::imwrite(t.img_path, cv->image);
+                // 零拷贝获取原图
+                cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(t.img_msg, t.img_msg->encoding);
+                
+                // 🌟 如果需要旋转，在这里（后台线程）执行，绝不阻塞主线程！
+                cv::Mat img_to_save;
+                if (do_rotate_) {
+                    cv::rotate(cv_ptr->image, img_to_save, rotate_code_);
+                } else {
+                    img_to_save = cv_ptr->image.clone();  // 深拷贝，避免修改共享内存
+                }
+
+                // 为了保证兼容性，如果是 RGB 格式，转存 JPG 前确保通道顺序为 BGR
+                if (t.img_msg->encoding == "rgb8") {
+                    cv::cvtColor(img_to_save, img_to_save, cv::COLOR_RGB2BGR);
+                }
+                
+                cv::imwrite(t.img_path, img_to_save);
 
                 // JSON 元数据
                 std::string jp = t.img_path.substr(0, t.img_path.size()-4) + ".json";
                 std::ofstream jf(jp);
-                jf << "{\"yaw_deg\":" << t.yaw_deg
-                   << ",\"trigger_ns\":" << t.trigger_ns << "}\n";
+                jf << "{\"yaw_deg\":" << t.yaw_deg << ",\"trigger_ns\":" << t.trigger_ns << "}\n";
             } catch (std::exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "存盘失败: %s", e.what());
             }
@@ -253,21 +294,54 @@ private:
     void generate_videos() {
         RCLCPP_INFO(this->get_logger(), "🎬 合成视频 (共%d圈)...", laps_);
         for (int i = 0; i < num_streams_; ++i) {
-            std::vector<std::string> imgs;
-            for (const auto& e : fs::directory_iterator(stream_dirs_[i]))
-                if (e.path().extension() == ".jpg")
-                    imgs.push_back(e.path().string());
-            std::sort(imgs.begin(), imgs.end());
-            if (imgs.empty()) continue;
+            // 收集 (图片路径, 时间戳) 并按时间排序
+            std::vector<std::pair<std::string, int64_t>> frames;
+            for (const auto& e : fs::directory_iterator(stream_dirs_[i])) {
+                if (e.path().extension() == ".jpg") {
+                    // 读取对应的 JSON 获取真实触发时间
+                    std::string json_path = e.path().string();
+                    json_path.replace(json_path.size() - 4, 4, ".json");
+                    int64_t ts = 0;
+                    std::ifstream jf(json_path);
+                    if (jf.is_open()) {
+                        std::string line;
+                        std::getline(jf, line);
+                        // 解析 "trigger_ns":123456789
+                        auto pos = line.find("\"trigger_ns\":");
+                        if (pos != std::string::npos) {
+                            ts = std::stoll(line.substr(pos + 13));
+                        }
+                    }
+                    frames.emplace_back(e.path().string(), ts);
+                }
+            }
+            if (frames.empty()) continue;
 
-            cv::Mat first = cv::imread(imgs[0]);
+            std::sort(frames.begin(), frames.end(),
+                      [](const auto& a, const auto& b) { return a.second < b.second; });
+
+            // 🌟 根据真实时间戳计算实际 FPS
+            double real_fps = fps_;  // fallback
+            if (frames.size() >= 2) {
+                int64_t first_ts = frames.front().second;
+                int64_t last_ts  = frames.back().second;
+                double total_sec = (last_ts - first_ts) / 1e9;
+                if (total_sec > 0.01) {
+                    real_fps = (frames.size() - 1) / total_sec;
+                }
+            }
+
+            cv::Mat first = cv::imread(frames[0].first);
             if (first.empty()) continue;
             bool color = (first.channels() == 3);
             std::string out = base_dir_ + "/video_" + std::to_string(static_cast<int>(i * interval_deg_)) + "deg.mp4";
-            cv::VideoWriter w(out, cv::VideoWriter::fourcc('m','p','4','v'), fps_, first.size(), color);
-            for (auto& p : imgs) { cv::Mat f = cv::imread(p); if (!f.empty()) w.write(f); }
+            cv::VideoWriter w(out, cv::VideoWriter::fourcc('m','p','4','v'), real_fps, first.size(), color);
+            for (auto& [path, ts] : frames) {
+                cv::Mat f = cv::imread(path);
+                if (!f.empty()) w.write(f);
+            }
             w.release();
-            RCLCPP_INFO(this->get_logger(), "  ✓ %s (%zu帧)", out.c_str(), imgs.size());
+            RCLCPP_INFO(this->get_logger(), "  ✓ %s (%zu帧, %.2f fps)", out.c_str(), frames.size(), real_fps);
         }
     }
 
@@ -277,6 +351,9 @@ private:
     std::string base_dir_;
     std::vector<std::string> stream_dirs_;
     std::vector<int> image_counts_;
+    
+    cv::RotateFlags rotate_code_;
+    bool do_rotate_ = false;
 
     double accumulated_ = 0, last_yaw_ = 0, dir_ema_ = 0;
     bool first_odom_ = true;
@@ -284,6 +361,10 @@ private:
 
     std::deque<ImageFrame> buffer_;
     std::deque<TriggerRequest> pending_;
+    std::mutex pending_mtx_; // 🌟 必须有的锁：保护 pending_ 队列被双线程并发访问
+
+    rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
+    rclcpp::CallbackGroup::SharedPtr image_cb_group_;
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -297,6 +378,11 @@ private:
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<AngleTriggerNode>());
+    // 🌟 恢复多核并发！真正榨干 CPU 性能
+    rclcpp::executors::MultiThreadedExecutor executor;
+    auto node = std::make_shared<AngleTriggerNode>();
+    executor.add_node(node);
+    executor.spin();
     rclcpp::shutdown();
+    return 0;
 }
