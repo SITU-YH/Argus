@@ -27,12 +27,7 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-# 如果你决定彻底抛弃 Python 版本的 trigger，可以把下面这几行注释掉；
-# 如果想留着备用也可以保持原样，因为 C++ 节点的名字叫 angle_trigger_node，它们不会冲突。
-install(PROGRAMS
-  scripts/trigger.py
-  DESTINATION lib/${PROJECT_NAME}
-)
+# trigger.py 已删除，统一使用 C++ 版本的 angle_trigger_node
 
 # ==========================================================
 # 2. 编译 C++ 源码专用区域

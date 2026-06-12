@@ -66,11 +66,14 @@ def generate_launch_description():
     # 4. 启动触发拍照节点 
     # ==========================================================
     trigger_node = Node(
-        package='argus',            
-        executable='trigger.py',    
+        package='argus',
+        executable='angle_trigger_node',
         name='angle_trigger_node',
         output='screen',
-        parameters=[{'fps': 0.5}]  # <--- 直接在这里传入 r/s 或 fps
+        parameters=[{
+            'fps': 10.0,                  # 转速/视频帧率 (r/s)
+            'trigger_interval_deg': 90.0  # 触发拍照的角度间隔 (度)
+        }]
     )
 
     # ==========================================================

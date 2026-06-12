@@ -14,8 +14,14 @@
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 
 namespace fs = std::filesystem;
+
+// 用 constexpr 替代非标准的 M_PI，C++17 保证跨平台一致
+constexpr double PI = 3.14159265358979323846;
+constexpr double RAD_TO_DEG = 180.0 / PI;
+constexpr double DEG_TO_RAD = PI / 180.0;
 
 // 异步存图任务包
 struct SaveTask {
@@ -31,11 +37,27 @@ public:
         // 1. 动态读取参数
         this->declare_parameter("fps", 10.0);
         fps_ = this->get_parameter("fps").as_double();
-        
-        // --- 核心配置参数 ---
-        trigger_interval_deg_ = 90.0;
-        trigger_interval_rad_ = trigger_interval_deg_ * M_PI / 180.0;
-        num_streams_ = static_cast<int>(360.0 / trigger_interval_deg_);
+
+        this->declare_parameter("trigger_interval_deg", 90.0);
+        trigger_interval_deg_ = this->get_parameter("trigger_interval_deg").as_double();
+
+        // 参数合法性校验
+        if (trigger_interval_deg_ <= 0.0 || trigger_interval_deg_ > 360.0) {
+            RCLCPP_WARN(this->get_logger(),
+                "trigger_interval_deg=%.1f 不合法，回退为默认值 90°", trigger_interval_deg_);
+            trigger_interval_deg_ = 90.0;
+        }
+
+        trigger_interval_rad_ = trigger_interval_deg_ * DEG_TO_RAD;
+        num_streams_ = static_cast<int>(std::ceil(360.0 / trigger_interval_deg_));
+
+        // 验证 360° 恰好被角度间隔整除，否则采集方向会有重叠或遗漏
+        double remainder = std::fmod(360.0, trigger_interval_deg_);
+        if (remainder > 1e-9 && std::abs(remainder - trigger_interval_deg_) > 1e-9) {
+            RCLCPP_WARN(this->get_logger(),
+                "360° 不能被 %.1f° 整除！最后一段仅有 %.1f°，各 stream 采集帧数可能不均",
+                trigger_interval_deg_, remainder);
+        }
         
         // 2. 自动创建存放目录，并清空历史残留图片
         const char* home_dir = getenv("HOME");
@@ -71,16 +93,16 @@ public:
 
         // 订阅里程计
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/Odometry", 10, 
-            std::bind(&AngleTriggerNode::odom_callback, this, std::placeholders::_1), 
+            "/Odometry", 10,
+            [this](nav_msgs::msg::Odometry::SharedPtr msg) { odom_callback(msg); },
             odom_options);
-            
+
         // 订阅相机图像
         rclcpp::QoS qos(5);
         qos.best_effort(); // 匹配海康相机的 QoS
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/driver/hikvision/argus_camera/image_raw", qos, 
-            std::bind(&AngleTriggerNode::image_callback, this, std::placeholders::_1), 
+            "/driver/hikvision/argus_camera/image_raw", qos,
+            [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { image_callback(msg); },
             image_options);
 
         RCLCPP_INFO(this->get_logger(), "🚀 [C++工业版] 全向采集已启动！");
@@ -116,11 +138,17 @@ private:
         }
 
         double diff = current_yaw - last_odom_yaw_;
-        diff = std::atan2(std::sin(diff), std::cos(diff));
+        diff = std::atan2(std::sin(diff), std::cos(diff));  // 归一化到 [-π, π]
 
-        // 🚀 核心物理规则：强行掰正由 SLAM 掉帧导致的“时光倒流”
-        if (diff < -M_PI / 2.0) {
-            diff += 2 * M_PI;
+        // 合理性检查：若单帧角度变化超过阈值，说明 SLAM 可能发生了重定位/跳变
+        // 合理上限：假设机器人最大转速 720°/s，10Hz 下每帧 < 1.26 rad
+        constexpr double MAX_DIFF_PER_TICK = 1.5;  // ~86° per tick at 10Hz
+        if (std::abs(diff) > MAX_DIFF_PER_TICK) {
+            RCLCPP_WARN(this->get_logger(),
+                "角度跳变过大 (%.1f deg)，疑似 SLAM 重定位或丢帧，跳过此帧以免累计偏差",
+                diff * RAD_TO_DEG);
+            last_odom_yaw_ = current_yaw;
+            return;
         }
 
         accumulated_yaw_ += diff;
@@ -128,8 +156,8 @@ private:
 
         debug_cnt_++;
         if (debug_cnt_ % 10 == 0) {
-            RCLCPP_INFO(this->get_logger(), "🔍 [探针] 当前原始Yaw: %.1f°, 真实累计已转: %.1f°",
-                        current_yaw * 180.0 / M_PI, accumulated_yaw_ * 180.0 / M_PI);
+            RCLCPP_INFO(this->get_logger(), "🔍 [探针] 当前原始Yaw: %.1f deg, 真实累计已转: %.1f deg",
+                        current_yaw * RAD_TO_DEG, accumulated_yaw_ * RAD_TO_DEG);
         }
 
         int current_expected_triggers = static_cast<int>(std::abs(accumulated_yaw_) / trigger_interval_rad_);
