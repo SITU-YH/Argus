@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>Argus core package including launch, python tools and C++ algorithms.</description>
   <maintainer email="situyouhao@gmail.com">SITU-YH</maintainer>
-  <license>GPL-3.0-or-later</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

@@ -179,4 +179,4 @@ livox_frame ──(TF外参)──> argus_camera_optical_frame
 
 ## License
 
-GPL-3.0-or-later
+Apache-2.0
