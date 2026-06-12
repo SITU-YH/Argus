@@ -112,11 +112,23 @@ private:
         double diff = yaw - last_yaw_;
         diff = std::atan2(std::sin(diff), std::cos(diff)); // [-π, π]
 
-        if (std::abs(diff) > 3.0) { // ~172° 阈值
+        // 大跳变消歧义：用近期方向记忆判断是边界穿越还是真跳变
+        if (std::abs(diff) > 2.5) {
+            if (dir_ema_ > 0.05 && diff < 0) {
+                // 一直在 CCW，大负数跳变 → 穿越 +π 边界
+                diff += 2.0 * PI;
+            } else if (dir_ema_ < -0.05 && diff > 0) {
+                diff -= 2.0 * PI;
+            }
+        }
+        if (std::abs(diff) > 3.0) {
             RCLCPP_WARN(this->get_logger(), "⚠️ 跳变 %.0f° 跳过", diff * RAD_TO_DEG);
             last_yaw_ = yaw;
             return;
         }
+
+        // 用小步更新方向 EMA
+        if (std::abs(diff) < 1.5) dir_ema_ = 0.85 * dir_ema_ + 0.15 * diff;
 
         accumulated_ += diff;
         last_yaw_ = yaw;
@@ -266,7 +278,7 @@ private:
     std::vector<std::string> stream_dirs_;
     std::vector<int> image_counts_;
 
-    double accumulated_ = 0, last_yaw_ = 0;
+    double accumulated_ = 0, last_yaw_ = 0, dir_ema_ = 0;
     bool first_odom_ = true;
     int expected_trig_ = 0, dbg_ = 0, laps_ = 0;
 
