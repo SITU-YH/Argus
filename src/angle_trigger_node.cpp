@@ -97,9 +97,8 @@ public:
             [this](nav_msgs::msg::Odometry::SharedPtr msg) { odom_callback(msg); },
             odom_options);
 
-        // 订阅相机图像
-        rclcpp::QoS qos(5);
-        qos.best_effort(); // 匹配海康相机的 QoS
+        // 订阅相机图像 (海康驱动使用 RELIABLE QoS，必须一致)
+        rclcpp::QoS qos = rclcpp::SensorDataQoS();
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/driver/hikvision/argus_camera/image_raw", qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { image_callback(msg); },
