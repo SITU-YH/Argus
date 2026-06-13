@@ -13,13 +13,13 @@
 ## 架构
 
 ```
-里程计 (/Odometry) ──┐
-                      ├── angle_trigger_node ── 按角度触发 ── 多 stream 存盘
-图像 (/driver/.../    ──┘                                └── 退出时合成 MP4
+IMU (/livox/imu) ──┐
+                    ├── angle_trigger_node ── 按角度触发 ── 多 stream 存盘
+图像 (/driver/.../  ──┘                                └── 退出时合成 MP4
       argus_camera/image_raw)
 ```
 
-- `angle_trigger_node`：核心节点，订阅里程计跟踪偏航角，在到达预设角度间隔时（默认 90°）触发图像采集
+- `angle_trigger_node`：核心节点，订阅 Livox IMU 纯陀螺仪 Z 轴角速度积分，在到达预设角度间隔时（默认 90°）触发图像采集
 - 每个角度对应一个独立 stream，图片保存至不同子目录
 - 图像旋转在后台存图线程中完成，不阻塞主线程
 - 节点退出时自动将每个 stream 的图片合成为 MP4 视频
@@ -50,7 +50,6 @@ Argus/
 ### ROS2 包
 - `rclcpp`
 - `sensor_msgs`
-- `nav_msgs`
 - `cv_bridge`
 - `tf2_ros`
 - `rviz2`
@@ -162,8 +161,8 @@ gain: 8.0                # 增益 (dB)
 
 ### 角度触发与帧匹配
 
-1. 里程计回调跟踪 `accumulated_`（累计旋转角度）
-2. 当累计角度越过 `k × interval_deg` 阈值时，用**线性插值**估算设备实际到达该角度的精确时刻
+1. IMU 回调取 Z 轴角速度，纯数学积分跟踪 `accumulated_`（累计旋转角度），无跳变风险
+2. 当累计角度越过 `k × interval_deg` 阈值时，用**反推插值**估算设备实际到达该角度的精确时刻
 3. 图像回调在环形缓冲中按时间戳查找最接近该时刻的图像帧
 4. 匹配到的帧放入后台存图队列，异步写入磁盘
 

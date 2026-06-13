@@ -12,7 +12,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED) 
 
@@ -42,7 +41,6 @@ target_include_directories(angle_trigger_node PUBLIC
 ament_target_dependencies(angle_trigger_node
   rclcpp
   sensor_msgs
-  nav_msgs
   cv_bridge
 )
 

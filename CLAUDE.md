@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Argus — 全向采集子系统
 
-ROS2 Humble 包，单节点 `angle_trigger_node`，订阅里程计跟踪偏航角，按角度间隔触发海康相机拍照。
+ROS2 Humble 包，单节点 `angle_trigger_node`，订阅 Livox IMU 纯陀螺仪 Z 轴角速度积分跟踪旋转角度，按角度间隔触发海康相机拍照。
 
 ### Build & Run
 
@@ -49,15 +49,14 @@ ros2 launch argus mapping_trigger.launch.py
 ### Data Flow
 
 ```
-/Odometry (nav_msgs/Odometry) ──┐
+/livox/imu (sensor_msgs/Imu) ──┐
                                   ├── angle_trigger_node ──► ~/argus_data/stream_*/
 /driver/hikvision/argus_camera/   │
     image_raw (sensor_msgs/Image)─┘
 ```
 
 外部依赖链:
-- `livox_ros_driver2` → `/livox/lidar` + `/livox/imu`
-- `FAST-LIO` → 消费 LiDAR + IMU，产出 `/Odometry`
+- `livox_ros_driver2` → `/livox/lidar` + `/livox/imu`（直接消费 IMU 陀螺仪，无需里程计）
 - `hikvision_driver` → `/driver/hikvision/argus_camera/image_raw`
 
 ### angle_trigger_node 内部设计
@@ -65,17 +64,17 @@ ros2 launch argus mapping_trigger.launch.py
 全部逻辑在 [src/angle_trigger_node.cpp](src/angle_trigger_node.cpp)（~440行），`MultiThreadedExecutor` 驱动。
 
 **线程模型**:
-- `odom_cb_group_` + `image_cb_group_`：两个 MutuallyExclusive 回调组，里程计和图像回调在不同线程并发执行
+- `imu_cb_group_` + `image_cb_group_`：两个 MutuallyExclusive 回调组，IMU 和图像回调在不同线程并发执行
 - `save_thread_`：后台存图线程，旋转 + 写盘不阻塞主线程
 
-**里程计回调 (`odom_cb`)**:
-1. 四元数 → 偏航角，EMA 方向跟踪处理 ±π 翻转
-2. 跳变检测（>3 rad 跳过，>2.5 rad 尝试修复）
-3. 累计角度 `accumulated_` 跨越 `k × interval_deg` 时，**线性插值**估算精确触发时刻
+**IMU 回调 (`imu_cb`)**:
+1. 取 Z 轴角速度 `wz`，纯数学积分 `accumulated_ += wz * dt`，无跳变风险
+2. 过滤异常时间差（dt ≤ 0 或 > 0.1s 跳过）
+3. 累计角度跨越 `k × interval_deg` 时，**反推插值**估算精确触发时刻
 4. 插值后的 `TriggerRequest` 入队 `pending_`
 
 **图像回调 (`image_cb`)**:
-1. 环形缓冲（最多 30 帧 / 2 秒窗口）
+1. 环形缓冲（最多 60 帧 / 2 秒窗口）
 2. 消费 `pending_`：按时间戳最近匹配（<300ms 精确匹配，<1s 弱匹配兜底）
 3. 匹配到的帧入队 `save_queue_`，通知存图线程
 
@@ -92,7 +91,7 @@ ros2 launch argus mapping_trigger.launch.py
 **线程安全**:
 | 资源 | 保护机制 |
 |------|----------|
-| `pending_` | `pending_mtx_`（里程计/图像双回调访问） |
+| `pending_` | `pending_mtx_`（IMU/图像双回调访问） |
 | `save_queue_` | `queue_mtx_` + `condition_variable` |
 | `stream_metadata_` | 仅存图线程写，析构时存图线程已停，无竞争 |
 

@@ -1,5 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
-#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
@@ -61,17 +61,15 @@ public:
         interval_rad_ = interval_deg_ * DEG_TO_RAD;
         num_streams_ = static_cast<int>(std::ceil(360.0 / interval_deg_));
 
-        // 🌟 新增：读取旋转参数，直接在此节点后台完成旋转
         this->declare_parameter("rotate_code", 2);
         int code = this->get_parameter("rotate_code").as_int();
         if (code >= 0 && code <= 2) {
             rotate_code_ = static_cast<cv::RotateFlags>(code);
             do_rotate_ = true;
         } else {
-            do_rotate_ = false; // 不做旋转
+            do_rotate_ = false; 
         }
 
-        // 创建存储目录
         const char* home = getenv("HOME");
         base_dir_ = home ? std::string(home) + "/argus_data" : "./argus_data";
         for (int i = 0; i < num_streams_; ++i) {
@@ -87,30 +85,27 @@ public:
         }
         stream_metadata_.resize(num_streams_);
 
-        // 后台存图线程
         save_thread_ = std::thread(&AngleTriggerNode::save_loop, this);
 
-        // 🌟 重新启用：回调组 (CallbackGroup) 分离里程计与图像线程
-        odom_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        imu_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
         image_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
         
-        rclcpp::SubscriptionOptions odom_options;
-        odom_options.callback_group = odom_cb_group_;
+        rclcpp::SubscriptionOptions imu_options;
+        imu_options.callback_group = imu_cb_group_;
         rclcpp::SubscriptionOptions image_options;
         image_options.callback_group = image_cb_group_;
 
-        // 订阅
-        odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/Odometry", 10,
-            [this](nav_msgs::msg::Odometry::SharedPtr m) { odom_cb(m); }, odom_options);
+        // 🌟 终极杀招：抛弃 Odometry，直接高频订阅 200Hz 的底层 IMU！
+        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            "/livox/imu", rclcpp::SensorDataQoS(),
+            [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { imu_cb(m); }, imu_options);
 
         rclcpp::QoS qos = rclcpp::SensorDataQoS();
-        // 🌟 核心修改：直接订阅原始的 image_raw，不要用中间节点了！
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/driver/hikvision/argus_camera/image_raw", qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr m) { image_cb(m); }, image_options);
 
-        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(高阶版)启动 | 间隔=%.1f° | 流数=%d", interval_deg_, num_streams_);
+        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(纯IMU降维版)启动 | 间隔=%.1f° | 流数=%d", interval_deg_, num_streams_);
         if (do_rotate_) RCLCPP_INFO(this->get_logger(), "🔄 图像将在后台进行无阻塞旋转 (Code: %d)", code);
     }
 
@@ -130,60 +125,69 @@ public:
     }
 
 private:
-    // ─── 里程计回调 ───
-    void odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg) {
-        auto& q = msg->pose.pose.orientation;
-        double yaw = std::atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z));
+    // ─── 纯陀螺仪高频积分回调 ───
+// ─── 纯陀螺仪高频积分回调 (带零偏过滤 & 主轴自适应) ───
+    void imu_cb(const sensor_msgs::msg::Imu::ConstSharedPtr msg) {
+        rclcpp::Time curr_stamp = msg->header.stamp;
 
-        if (first_odom_) {
-            last_yaw_ = yaw;
-            last_odom_stamp_ = msg->header.stamp;
-            first_odom_ = false;
+        if (first_imu_) {
+            last_imu_stamp_ = curr_stamp;
+            first_imu_ = false;
             return;
         }
 
-        double diff = yaw - last_yaw_;
-        diff = std::atan2(std::sin(diff), std::cos(diff));
-
-        if (std::abs(diff) > 2.5) {
-            if (dir_ema_ > 0.05 && diff < 0) {
-                diff += 2.0 * PI;
-            } else if (dir_ema_ < -0.05 && diff > 0) {
-                diff -= 2.0 * PI;
-            }
-        }
-        if (std::abs(diff) > 3.0) {
-            RCLCPP_WARN(this->get_logger(), "⚠️ 跳变 %.0f° 跳过", diff * RAD_TO_DEG);
-            last_yaw_ = yaw;
-            last_odom_stamp_ = msg->header.stamp;
+        double dt = (curr_stamp - last_imu_stamp_).seconds();
+        if (dt <= 0.0 || dt > 0.1) {
+            last_imu_stamp_ = curr_stamp;
             return;
         }
 
-        if (std::abs(diff) < 1.5) dir_ema_ = 0.85 * dir_ema_ + 0.15 * diff;
+        // 1. 获取三个轴的原始角速度
+        double wx = msg->angular_velocity.x;
+        double wy = msg->angular_velocity.y;
+        double wz = msg->angular_velocity.z;
 
-        // 🌟 保存累加前的值 + 上一帧时间戳，用于线性插值
+        // 2. 🌟 零偏死区滤波 (Deadband Filter)
+        // 屏蔽掉低于 0.05 rad/s (约 2.8°/s) 的静态环境底噪，彻底解决静止时的角度漂移！
+        if (std::abs(wx) < 0.05) wx = 0.0;
+        if (std::abs(wy) < 0.05) wy = 0.0;
+        if (std::abs(wz) < 0.05) wz = 0.0;
+
+        // 3. 🌟 自动寻找主旋转轴 (自适应雷达安装方向)
+        // 既然是高速转台，只要一开机，真正的那个旋转轴的角速度绝对是最大的！
+        double main_w = 0.0;
+        if (std::abs(wx) >= std::abs(wy) && std::abs(wx) >= std::abs(wz)) {
+            main_w = wx;
+        } else if (std::abs(wy) >= std::abs(wx) && std::abs(wy) >= std::abs(wz)) {
+            main_w = wy;
+        } else {
+            main_w = wz;
+        }
+
+        // 如果三个轴的转速都没超过死区，说明转台处于静止，直接退出，绝不产生假积分！
+        if (main_w == 0.0) {
+            last_imu_stamp_ = curr_stamp;
+            return; 
+        }
+
+        // 4. 纯粹的数学积分
         double acc_before = accumulated_;
-        rclcpp::Time odom_prev_stamp = last_odom_stamp_;
-        accumulated_ += diff;
-        last_yaw_ = yaw;
-        last_odom_stamp_ = msg->header.stamp;
+        accumulated_ += main_w * dt;
+        last_imu_stamp_ = curr_stamp;
 
         int new_trig = static_cast<int>(std::abs(accumulated_) / interval_rad_);
         for (int k = expected_trig_ + 1; k <= new_trig; ++k) {
             int stream = k % num_streams_;
 
-            // 🌟 线性插值：精确估算到达目标角度那一刻的时间
             double target_abs = k * interval_rad_;
             double acc_before_abs = std::abs(acc_before);
             double acc_after_abs  = std::abs(accumulated_);
-            rclcpp::Time interp_stamp = msg->header.stamp;  // fallback
+            rclcpp::Time interp_stamp = msg->header.stamp; 
 
             if (acc_after_abs > acc_before_abs) {
                 double frac = (target_abs - acc_before_abs) / (acc_after_abs - acc_before_abs);
                 if (frac >= 0.0 && frac <= 1.0) {
-                    rclcpp::Time cur_stamp = msg->header.stamp;
-                    double dt = (cur_stamp - odom_prev_stamp).seconds();
-                    interp_stamp = odom_prev_stamp + rclcpp::Duration::from_seconds(frac * dt);
+                    interp_stamp = curr_stamp - rclcpp::Duration::from_seconds((1.0 - frac) * dt);
                 }
             }
 
@@ -192,35 +196,32 @@ private:
             req.yaw_deg = k * interval_deg_;
             req.stream_idx = stream;
 
-            // 🌟 必须加锁！保护挂起任务队列
             {
                 std::lock_guard<std::mutex> lock(pending_mtx_);
                 pending_.push_back(req);
             }
 
-            RCLCPP_INFO(this->get_logger(), "🎯 触发 %.0f° → stream_%d | 插值=%.0f%%",
-                       req.yaw_deg, stream,
-                       (acc_after_abs > acc_before_abs) ?
+            RCLCPP_INFO(this->get_logger(), "🎯 触发 %.0f° → stream_%d | 插值追溯=%.1f%%",
+                       req.yaw_deg, stream, (acc_after_abs > acc_before_abs) ? 
                        100.0 * (target_abs - acc_before_abs) / (acc_after_abs - acc_before_abs) : 100.0);
         }
         expected_trig_ = new_trig;
 
-        if (++dbg_ % 20 == 0) {
-            RCLCPP_INFO(this->get_logger(), "🔍 yaw=%.0f° 累计=%.0f°", yaw * RAD_TO_DEG, accumulated_ * RAD_TO_DEG);
+        // 🌟 打印三个轴的真实转速，让你一眼看穿物理世界！
+        if (++dbg_ % 200 == 0) {
+            RCLCPP_INFO(this->get_logger(), "🔍 IMU积分: 累计=%.0f° | 真实转速(XYZ)=[%.2f, %.2f, %.2f] rad/s", 
+                        accumulated_ * RAD_TO_DEG, msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
         }
     }
-
     // ─── 图像回调 ───
     void image_cb(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
-        // 环形缓冲操作
         ImageFrame f{msg, msg->header.stamp};
         buffer_.push_back(f);
         auto now = this->now();
         while (!buffer_.empty() && (now - buffer_.front().stamp).seconds() > 2.0)
             buffer_.pop_front();
-        while (buffer_.size() > 30) buffer_.pop_front();
+        while (buffer_.size() > 60) buffer_.pop_front(); // 放宽一点缓冲池
 
-        // 🌟 加锁访问 pending_
         std::lock_guard<std::mutex> pending_lock(pending_mtx_);
         
         while (!pending_.empty()) {
@@ -250,11 +251,11 @@ private:
                 }
                 cv_.notify_one();
 
-                RCLCPP_INFO(this->get_logger(), "📸 [%.0f°] 匹配帧 (Δt=%.0fms)", req.yaw_deg, best_d * 1000);
+                RCLCPP_INFO(this->get_logger(), "📸 [%.0f°] 时光倒流匹配 (Δt=%.0fms)", req.yaw_deg, best_d * 1000);
 
                 if ((req.stream_idx + 1) % num_streams_ == 0) {
                     laps_++;
-                    RCLCPP_INFO(this->get_logger(), "🟢 第%d圈完成!", laps_);
+                    RCLCPP_INFO(this->get_logger(), "🟢 第%d圈完美闭环!", laps_);
                 }
                 pending_.pop_front();
             } else if (best && (now - req.trigger_time).seconds() > 1.0) {
@@ -273,7 +274,7 @@ private:
                     save_queue_.push(t);
                 }
                 cv_.notify_one();
-                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配超时 [%.0f°] Δt=%.0fms", req.yaw_deg, best_d * 1000);
+                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配兜底 [%.0f°] Δt=%.0fms", req.yaw_deg, best_d * 1000);
                 pending_.pop_front();
             } else {
                 break;
@@ -294,25 +295,21 @@ private:
             }
 
             try {
-                // 零拷贝获取原图
                 cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(t.img_msg, t.img_msg->encoding);
                 
-                // 🌟 如果需要旋转，在这里（后台线程）执行，绝不阻塞主线程！
                 cv::Mat img_to_save;
                 if (do_rotate_) {
                     cv::rotate(cv_ptr->image, img_to_save, rotate_code_);
                 } else {
-                    img_to_save = cv_ptr->image.clone();  // 深拷贝，避免修改共享内存
+                    img_to_save = cv_ptr->image.clone();
                 }
 
-                // 为了保证兼容性，如果是 RGB 格式，转存 JPG 前确保通道顺序为 BGR
                 if (t.img_msg->encoding == "rgb8") {
                     cv::cvtColor(img_to_save, img_to_save, cv::COLOR_RGB2BGR);
                 }
                 
                 cv::imwrite(t.img_path, img_to_save);
 
-                // 🌟 收集元数据到内存，退出时统一写一个 metadata.json
                 std::string fname = fs::path(t.img_path).filename().string();
                 std::ostringstream meta;
                 meta << "{\"frame\":\"" << fname
@@ -329,7 +326,6 @@ private:
     void generate_videos() {
         RCLCPP_INFO(this->get_logger(), "🎬 合成视频 (共%d圈)...", laps_);
         for (int i = 0; i < num_streams_; ++i) {
-            // 收集图片路径并按时间排序
             std::vector<std::pair<std::string, int64_t>> frames;
             for (const auto& e : fs::directory_iterator(stream_dirs_[i])) {
                 if (e.path().extension() == ".jpg")
@@ -337,7 +333,6 @@ private:
             }
             if (frames.empty()) continue;
 
-            // 从 metadata.json 读取时间戳
             std::string meta_path = stream_dirs_[i] + "/metadata.json";
             std::map<std::string, int64_t> ts_map;
             std::ifstream mf(meta_path);
@@ -362,7 +357,6 @@ private:
             std::sort(frames.begin(), frames.end(),
                       [](const auto& a, const auto& b) { return a.second < b.second; });
 
-            // 根据真实时间戳计算实际 FPS
             double real_fps = fps_;
             if (frames.size() >= 2 && frames.front().second > 0 && frames.back().second > 0) {
                 double total_sec = (frames.back().second - frames.front().second) / 1e9;
@@ -383,7 +377,6 @@ private:
         }
     }
 
-    // ─── 写出每个 stream 的 metadata.json ───
     void write_metadata() {
         for (int i = 0; i < num_streams_; ++i) {
             if (stream_metadata_[i].empty()) continue;
@@ -399,30 +392,32 @@ private:
             RCLCPP_INFO(this->get_logger(), "📋 metadata.json → %s (%zu条)", path.c_str(), stream_metadata_[i].size());
         }
     }
-    // ─── 成员变量 ───
+
     double fps_, interval_deg_, interval_rad_;
     int num_streams_;
     std::string base_dir_;
     std::vector<std::string> stream_dirs_;
     std::vector<int> image_counts_;
-    std::vector<std::vector<std::string>> stream_metadata_;  // 每条一行 JSON
+    std::vector<std::vector<std::string>> stream_metadata_;
     
     cv::RotateFlags rotate_code_;
     bool do_rotate_ = false;
 
-    double accumulated_ = 0, last_yaw_ = 0, dir_ema_ = 0;
-    bool first_odom_ = true;
+    // 🌟 清理了大量无用的跳变检测变量，只留下纯粹的数学积分
+    double accumulated_ = 0;
+    bool first_imu_ = true;
+    rclcpp::Time last_imu_stamp_;
+    
     int expected_trig_ = 0, dbg_ = 0, laps_ = 0;
-    rclcpp::Time last_odom_stamp_;  // 上一帧里程计时间戳，用于插值
 
     std::deque<ImageFrame> buffer_;
     std::deque<TriggerRequest> pending_;
-    std::mutex pending_mtx_; // 🌟 必须有的锁：保护 pending_ 队列被双线程并发访问
+    std::mutex pending_mtx_; 
 
-    rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
+    rclcpp::CallbackGroup::SharedPtr imu_cb_group_;
     rclcpp::CallbackGroup::SharedPtr image_cb_group_;
 
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_; // 🌟 改为订阅 IMU
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
 
     std::thread save_thread_;
@@ -434,7 +429,6 @@ private:
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    // 🌟 恢复多核并发！真正榨干 CPU 性能
     rclcpp::executors::MultiThreadedExecutor executor;
     auto node = std::make_shared<AngleTriggerNode>();
     executor.add_node(node);
