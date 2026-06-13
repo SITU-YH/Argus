@@ -75,7 +75,8 @@ def generate_launch_description():
         parameters=[{
             'fps': 10.0,
             'trigger_interval_deg': 90.0,
-            'rotate_code': 2  # <--- 把旋转指令直接传给 trigger 节点！
+            'rotate_code': 2,
+            'rotation_axis': 'y'  # 🌟 固定旋转轴，杜绝切轴跳变
         }]
     )
 

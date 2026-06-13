@@ -6,10 +6,10 @@
     # ROS2 坐标系 ID，推荐使用格式：[camera_name]_optical_frame
     frame_id: "argus_camera_optical_frame"
 
-    # 图像像素格式: 
-    # "Keep": 保持 MVS 配置的原始格式（推荐，最省带宽）
+    # 图像像素格式:
+    # "Keep": 保持 MVS 配置的原始格式
     # 可选: "RGB8", "BGR8", "Mono8", "BayerRG8", "BayerBG8", "BayerGR8", "BayerGB8"
-    pixel_format: "RGB8"
+    pixel_format: "BayerRG8"
 
     # 相机标定文件路径 (URI格式)
 

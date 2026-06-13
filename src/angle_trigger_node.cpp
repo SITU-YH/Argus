@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 
@@ -67,8 +68,14 @@ public:
             rotate_code_ = static_cast<cv::RotateFlags>(code);
             do_rotate_ = true;
         } else {
-            do_rotate_ = false; 
+            do_rotate_ = false;
         }
+
+        this->declare_parameter("rotation_axis", "z");
+        std::string axis = this->get_parameter("rotation_axis").as_string();
+        if (axis == "x" || axis == "X")      rotation_axis_ = 0;
+        else if (axis == "y" || axis == "Y") rotation_axis_ = 1;
+        else                                 rotation_axis_ = 2;  // 默认 z
 
         const char* home = getenv("HOME");
         base_dir_ = home ? std::string(home) + "/argus_data" : "./argus_data";
@@ -77,7 +84,7 @@ public:
             fs::create_directories(dir);
             for (const auto& e : fs::directory_iterator(dir)) {
                 auto ext = e.path().extension();
-                if (ext == ".jpg" || ext == ".mp4") fs::remove(e.path());
+                if (ext == ".jpg" || ext == ".png" || ext == ".mp4") fs::remove(e.path());
                 if (e.path().filename() == "metadata.json") fs::remove(e.path());
             }
             stream_dirs_.push_back(dir);
@@ -105,7 +112,9 @@ public:
             "/driver/hikvision/argus_camera/image_raw", qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr m) { image_cb(m); }, image_options);
 
-        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(纯IMU降维版)启动 | 间隔=%.1f° | 流数=%d", interval_deg_, num_streams_);
+        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(纯IMU降维版)启动 | 间隔=%.1f° | 流数=%d | 主轴=%s",
+                   interval_deg_, num_streams_,
+                   rotation_axis_ == 0 ? "X" : rotation_axis_ == 1 ? "Y" : "Z");
         if (do_rotate_) RCLCPP_INFO(this->get_logger(), "🔄 图像将在后台进行无阻塞旋转 (Code: %d)", code);
     }
 
@@ -116,7 +125,8 @@ public:
         }
         cv_.notify_all();
         if (save_thread_.joinable()) save_thread_.join();
-        RCLCPP_INFO(this->get_logger(), "🛑 节点析构，写出元数据 + 合成视频...");
+        RCLCPP_INFO(this->get_logger(), "🛑 节点析构，写出元数据 + 合成视频... | 弱匹配=%d次 强匹配=%d圈",
+                   weak_match_count_, laps_);
         write_metadata();
         auto video_future = std::async(std::launch::async, &AngleTriggerNode::generate_videos, this);
         if (video_future.wait_for(std::chrono::seconds(120)) == std::future_status::timeout) {
@@ -153,21 +163,15 @@ private:
         if (std::abs(wy) < 0.05) wy = 0.0;
         if (std::abs(wz) < 0.05) wz = 0.0;
 
-        // 3. 🌟 自动寻找主旋转轴 (自适应雷达安装方向)
-        // 既然是高速转台，只要一开机，真正的那个旋转轴的角速度绝对是最大的！
-        double main_w = 0.0;
-        if (std::abs(wx) >= std::abs(wy) && std::abs(wx) >= std::abs(wz)) {
-            main_w = wx;
-        } else if (std::abs(wy) >= std::abs(wx) && std::abs(wy) >= std::abs(wz)) {
-            main_w = wy;
-        } else {
-            main_w = wz;
-        }
+        // 3. 🌟 固定主旋转轴，杜绝振动导致的切轴跳变（修复重复帧 bug）
+        double main_w = (rotation_axis_ == 0) ? wx :
+                        (rotation_axis_ == 1) ? wy : wz;
 
-        // 如果三个轴的转速都没超过死区，说明转台处于静止，直接退出，绝不产生假积分！
-        if (main_w == 0.0) {
+        // 该轴转速低于死区，说明转台静止，直接退出
+        if (std::abs(main_w) < 0.05) {
+            main_w = 0.0;
             last_imu_stamp_ = curr_stamp;
-            return; 
+            return;
         }
 
         // 4. 纯粹的数学积分
@@ -205,7 +209,7 @@ private:
                        req.yaw_deg, stream, (acc_after_abs > acc_before_abs) ? 
                        100.0 * (target_abs - acc_before_abs) / (acc_after_abs - acc_before_abs) : 100.0);
         }
-        expected_trig_ = new_trig;
+        expected_trig_ = std::max(expected_trig_, new_trig);  // 永不回退，防止反转/抖动产生重复帧
 
         // 🌟 打印三个轴的真实转速，让你一眼看穿物理世界！
         if (++dbg_ % 200 == 0) {
@@ -241,7 +245,7 @@ private:
 
                 SaveTask t;
                 t.img_msg = best->msg;
-                t.img_path = ss.str() + ".jpg";
+                t.img_path = ss.str();  // 扩展名由 save_loop 根据 encoding 决定
                 t.yaw_deg = req.yaw_deg;
                 t.trigger_ns = req.trigger_time.nanoseconds();
                 t.stream_idx = req.stream_idx;
@@ -265,7 +269,7 @@ private:
 
                 SaveTask t;
                 t.img_msg = best->msg;
-                t.img_path = ss.str() + ".jpg";
+                t.img_path = ss.str();  // 扩展名由 save_loop 根据 encoding 决定
                 t.yaw_deg = req.yaw_deg;
                 t.trigger_ns = req.trigger_time.nanoseconds();
                 t.stream_idx = req.stream_idx;
@@ -274,7 +278,9 @@ private:
                     save_queue_.push(t);
                 }
                 cv_.notify_one();
-                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配兜底 [%.0f°] Δt=%.0fms", req.yaw_deg, best_d * 1000);
+                weak_match_count_++;
+                RCLCPP_WARN(this->get_logger(), "⚠️ 弱匹配兜底 [%.0f°] Δt=%.0fms (累计%d次)",
+                           req.yaw_deg, best_d * 1000, weak_match_count_);
                 pending_.pop_front();
             } else {
                 break;
@@ -295,26 +301,44 @@ private:
             }
 
             try {
-                cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(t.img_msg, t.img_msg->encoding);
-                
+                std::string enc = t.img_msg->encoding;
+                cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(t.img_msg, enc);
+
+                bool is_bayer = (enc == sensor_msgs::image_encodings::BAYER_RGGB8 ||
+                                 enc == sensor_msgs::image_encodings::BAYER_BGGR8 ||
+                                 enc == sensor_msgs::image_encodings::BAYER_GRBG8 ||
+                                 enc == sensor_msgs::image_encodings::BAYER_GBRG8);
+
                 cv::Mat img_to_save;
-                if (do_rotate_) {
-                    cv::rotate(cv_ptr->image, img_to_save, rotate_code_);
-                } else {
+                std::string save_path = t.img_path;
+
+                if (is_bayer) {
+                    // Bayer 原始数据：跳过旋转和色彩转换，存无损 PNG
                     img_to_save = cv_ptr->image.clone();
+                    save_path = t.img_path + ".png";
+                } else {
+                    if (do_rotate_) {
+                        cv::rotate(cv_ptr->image, img_to_save, rotate_code_);
+                    } else {
+                        img_to_save = cv_ptr->image.clone();
+                    }
+                    if (enc == "rgb8") {
+                        cv::cvtColor(img_to_save, img_to_save, cv::COLOR_RGB2BGR);
+                    }
+                    save_path = t.img_path + ".jpg";
                 }
 
-                if (t.img_msg->encoding == "rgb8") {
-                    cv::cvtColor(img_to_save, img_to_save, cv::COLOR_RGB2BGR);
-                }
-                
-                cv::imwrite(t.img_path, img_to_save);
+                cv::imwrite(save_path, img_to_save);
 
-                std::string fname = fs::path(t.img_path).filename().string();
+                std::string fname = fs::path(save_path).filename().string();
                 std::ostringstream meta;
                 meta << "{\"frame\":\"" << fname
                      << "\",\"yaw_deg\":" << t.yaw_deg
-                     << ",\"trigger_ns\":" << t.trigger_ns << "}";
+                     << ",\"trigger_ns\":" << t.trigger_ns;
+                if (is_bayer) {
+                    meta << ",\"encoding\":\"" << enc << "\"";
+                }
+                meta << "}";
                 stream_metadata_[t.stream_idx].push_back(meta.str());
             } catch (std::exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "存盘失败: %s", e.what());
@@ -326,25 +350,34 @@ private:
     void generate_videos() {
         RCLCPP_INFO(this->get_logger(), "🎬 合成视频 (共%d圈)...", laps_);
         for (int i = 0; i < num_streams_; ++i) {
+            // 收集帧文件（.jpg 或 .png）
             std::vector<std::pair<std::string, int64_t>> frames;
             for (const auto& e : fs::directory_iterator(stream_dirs_[i])) {
-                if (e.path().extension() == ".jpg")
+                auto ext = e.path().extension();
+                if (ext == ".jpg" || ext == ".png")
                     frames.emplace_back(e.path().string(), 0);
             }
             if (frames.empty()) continue;
 
+            // 解析 metadata: 时间戳 + Bayer 编码
             std::string meta_path = stream_dirs_[i] + "/metadata.json";
             std::map<std::string, int64_t> ts_map;
+            std::map<std::string, std::string> enc_map;
             std::ifstream mf(meta_path);
             if (mf.is_open()) {
                 std::string line;
                 while (std::getline(mf, line)) {
                     auto pos_f = line.find("\"frame\":\"");
                     auto pos_t = line.find("\"trigger_ns\":");
+                    auto pos_e = line.find("\"encoding\":\"");
                     if (pos_f != std::string::npos && pos_t != std::string::npos) {
                         std::string fname = line.substr(pos_f + 9, line.find("\"", pos_f + 9) - pos_f - 9);
                         int64_t ts = std::stoll(line.substr(pos_t + 13));
                         ts_map[fname] = ts;
+                        if (pos_e != std::string::npos) {
+                            std::string enc = line.substr(pos_e + 12, line.find("\"", pos_e + 12) - pos_e - 12);
+                            enc_map[fname] = enc;
+                        }
                     }
                 }
             }
@@ -363,17 +396,41 @@ private:
                 if (total_sec > 0.01) real_fps = (frames.size() - 1) / total_sec;
             }
 
-            cv::Mat first = cv::imread(frames[0].first);
+            cv::Mat first = cv::imread(frames[0].first, cv::IMREAD_UNCHANGED);
             if (first.empty()) continue;
-            bool color = (first.channels() == 3);
+
+            // 确定 debayer 参数（仅对 Bayer 帧生效）
+            std::string fname0 = fs::path(frames[0].first).filename().string();
+            auto enc_it = enc_map.find(fname0);
+            int bayer_code = -1;
+            if (enc_it != enc_map.end()) {
+                std::string e = enc_it->second;
+                if (e == sensor_msgs::image_encodings::BAYER_RGGB8)      bayer_code = cv::COLOR_BayerRG2BGR;
+                else if (e == sensor_msgs::image_encodings::BAYER_BGGR8) bayer_code = cv::COLOR_BayerBG2BGR;
+                else if (e == sensor_msgs::image_encodings::BAYER_GRBG8) bayer_code = cv::COLOR_BayerGR2BGR;
+                else if (e == sensor_msgs::image_encodings::BAYER_GBRG8) bayer_code = cv::COLOR_BayerGB2BGR;
+            }
+
+            cv::Size out_size = first.size();
+            bool is_bayer_stream = (bayer_code >= 0 && first.channels() == 1);
+            bool color = is_bayer_stream ? true : (first.channels() == 3);
+
             std::string out = base_dir_ + "/video_" + std::to_string(static_cast<int>(i * interval_deg_)) + "deg.mp4";
-            cv::VideoWriter w(out, cv::VideoWriter::fourcc('m','p','4','v'), real_fps, first.size(), color);
+            cv::VideoWriter w(out, cv::VideoWriter::fourcc('m','p','4','v'), real_fps, out_size, color);
             for (auto& [path, ts] : frames) {
-                cv::Mat f = cv::imread(path);
-                if (!f.empty()) w.write(f);
+                cv::Mat f = cv::imread(path, cv::IMREAD_UNCHANGED);
+                if (f.empty()) continue;
+                if (is_bayer_stream && f.channels() == 1 && bayer_code >= 0) {
+                    cv::Mat rgb;
+                    cv::cvtColor(f, rgb, bayer_code);
+                    w.write(rgb);
+                } else {
+                    w.write(f);
+                }
             }
             w.release();
-            RCLCPP_INFO(this->get_logger(), "  ✓ %s (%zu帧, %.2f fps)", out.c_str(), frames.size(), real_fps);
+            RCLCPP_INFO(this->get_logger(), "  ✓ %s (%zu帧, %.2f fps%s)", out.c_str(), frames.size(), real_fps,
+                       is_bayer_stream ? ", Bayer→RGB" : "");
         }
     }
 
@@ -402,13 +459,14 @@ private:
     
     cv::RotateFlags rotate_code_;
     bool do_rotate_ = false;
+    int rotation_axis_ = 2;  // 0=X, 1=Y, 2=Z
 
     // 🌟 清理了大量无用的跳变检测变量，只留下纯粹的数学积分
     double accumulated_ = 0;
     bool first_imu_ = true;
     rclcpp::Time last_imu_stamp_;
     
-    int expected_trig_ = 0, dbg_ = 0, laps_ = 0;
+    int expected_trig_ = 0, dbg_ = 0, laps_ = 0, weak_match_count_ = 0;
 
     std::deque<ImageFrame> buffer_;
     std::deque<TriggerRequest> pending_;
