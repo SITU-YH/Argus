@@ -71,16 +71,16 @@ public:
             do_rotate_ = false;
         }
 
-        this->declare_parameter("rotation_axis", "z");
-        std::string axis = this->get_parameter("rotation_axis").as_string();
-        if (axis == "x" || axis == "X")      rotation_axis_ = 0;
-        else if (axis == "y" || axis == "Y") rotation_axis_ = 1;
-        else                                 rotation_axis_ = 2;  // 默认 z
+        this->declare_parameter("rotation_axis", 2);  // 0=X, 1=Y, 2=Z（默认）
+        rotation_axis_ = this->get_parameter("rotation_axis").as_int();
+        if (rotation_axis_ < 0 || rotation_axis_ > 2) rotation_axis_ = 2;
 
         const char* home = getenv("HOME");
         base_dir_ = home ? std::string(home) + "/argus_data" : "./argus_data";
         for (int i = 0; i < num_streams_; ++i) {
-            std::string dir = base_dir_ + "/stream_" + std::to_string(static_cast<int>(i * interval_deg_));
+            int deg = static_cast<int>(i * interval_deg_);
+            if (deg == 0) deg = 360;  // 避免 stream_0 名不副实，0° = 360°
+            std::string dir = base_dir_ + "/stream_" + std::to_string(deg);
             fs::create_directories(dir);
             for (const auto& e : fs::directory_iterator(dir)) {
                 auto ext = e.path().extension();
@@ -415,7 +415,9 @@ private:
             bool is_bayer_stream = (bayer_code >= 0 && first.channels() == 1);
             bool color = is_bayer_stream ? true : (first.channels() == 3);
 
-            std::string out = base_dir_ + "/video_" + std::to_string(static_cast<int>(i * interval_deg_)) + "deg.mp4";
+            int deg = static_cast<int>(i * interval_deg_);
+            if (deg == 0) deg = 360;
+            std::string out = base_dir_ + "/video_" + std::to_string(deg) + "deg.mp4";
             cv::VideoWriter w(out, cv::VideoWriter::fourcc('m','p','4','v'), real_fps, out_size, color);
             for (auto& [path, ts] : frames) {
                 cv::Mat f = cv::imread(path, cv::IMREAD_UNCHANGED);
