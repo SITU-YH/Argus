@@ -71,7 +71,7 @@ Argus/
 
 ```bash
 cd ~/rmd_ws
-colcon build --packages-select argus
+colcon build --packages-select argus --symlink-install
 source install/setup.bash
 ```
 
