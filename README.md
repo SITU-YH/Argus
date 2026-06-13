@@ -59,7 +59,7 @@ Argus/
 
 ### 外部驱动
 - [`livox_ros_driver2`](https://github.com/Livox-SDK/livox_ros_driver2) — Livox LiDAR 驱动
-- [`hikvision_driver`](https://github.com/STYH-3524/hikvision_driver) — 海康相机驱动
+- [`hikvision_driver_ros2`](https://github.com/SITU-YH/hikvision_driver_ros2) — 海康相机驱动
 - [`FAST-LIO`](https://github.com/hku-mars/FAST_LIO) — 激光惯性里程计（可选，仅建图需要）
 
 ### 系统
