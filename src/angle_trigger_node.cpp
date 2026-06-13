@@ -75,6 +75,11 @@ public:
         rotation_axis_ = this->get_parameter("rotation_axis").as_int();
         if (rotation_axis_ < 0 || rotation_axis_ > 2) rotation_axis_ = 2;
 
+        this->declare_parameter("auto_stop_timeout", 3.0);  // 转台停转多少秒后自动关闭, 0=禁用
+        auto_stop_timeout_ = this->get_parameter("auto_stop_timeout").as_double();
+        if (auto_stop_timeout_ < 0.0) auto_stop_timeout_ = 0.0;
+        last_rotation_time_ = this->now();  // 初始化为当前时刻，避免启动时误触发
+
         const char* home = getenv("HOME");
         base_dir_ = home ? std::string(home) + "/argus_data" : "./argus_data";
         for (int i = 0; i < num_streams_; ++i) {
@@ -112,9 +117,27 @@ public:
             "/driver/hikvision/argus_camera/image_raw", qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr m) { image_cb(m); }, image_options);
 
-        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(纯IMU降维版)启动 | 间隔=%.1f° | 流数=%d | 主轴=%s",
+        // 🌟 起停自动检测: 1Hz timer 监测转台是否停转
+        idle_timer_ = this->create_wall_timer(
+            std::chrono::seconds(1),
+            [this]() {
+                if (auto_stop_triggered_) return;
+                if (auto_stop_timeout_ <= 0.0) return;
+                if (!has_rotated_) return;  // 还没开始转，不检测
+                auto now = this->now();
+                double idle_s = (now - last_rotation_time_).seconds();
+                if (idle_s >= auto_stop_timeout_) {
+                    RCLCPP_INFO(this->get_logger(),
+                        "🛑 转台已停转 %.0f 秒 (阈值 %.0fs), 自动关闭节点", idle_s, auto_stop_timeout_);
+                    auto_stop_triggered_ = true;
+                    rclcpp::shutdown();
+                }
+            });
+
+        RCLCPP_INFO(this->get_logger(), "🚀 全向采集(纯IMU降维版)启动 | 间隔=%.1f° | 流数=%d | 主轴=%s%s",
                    interval_deg_, num_streams_,
-                   rotation_axis_ == 0 ? "X" : rotation_axis_ == 1 ? "Y" : "Z");
+                   rotation_axis_ == 0 ? "X" : rotation_axis_ == 1 ? "Y" : "Z",
+                   auto_stop_timeout_ > 0 ? " | 自动停" : "");
         if (do_rotate_) RCLCPP_INFO(this->get_logger(), "🔄 图像将在后台进行无阻塞旋转 (Code: %d)", code);
     }
 
@@ -172,6 +195,12 @@ private:
             main_w = 0.0;
             last_imu_stamp_ = curr_stamp;
             return;
+        }
+
+        last_rotation_time_ = curr_stamp;  // 检测到有效旋转，刷新起停监测时钟
+        if (!has_rotated_) {
+            has_rotated_ = true;
+            RCLCPP_INFO(this->get_logger(), "🟢 首次检测到转动，起停监测已激活 (阈值=%.0fs)", auto_stop_timeout_);
         }
 
         // 4. 纯粹的数学积分
@@ -458,10 +487,16 @@ private:
     std::vector<std::string> stream_dirs_;
     std::vector<int> image_counts_;
     std::vector<std::vector<std::string>> stream_metadata_;
-    
+
     cv::RotateFlags rotate_code_;
     bool do_rotate_ = false;
     int rotation_axis_ = 2;  // 0=X, 1=Y, 2=Z
+
+    double auto_stop_timeout_ = 3.0;
+    rclcpp::Time last_rotation_time_;
+    bool has_rotated_ = false;
+    bool auto_stop_triggered_ = false;
+    rclcpp::TimerBase::SharedPtr idle_timer_;
 
     // 🌟 清理了大量无用的跳变检测变量，只留下纯粹的数学积分
     double accumulated_ = 0;
