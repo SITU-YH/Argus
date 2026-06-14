@@ -57,6 +57,13 @@ public:
         this->declare_parameter("fps", 10.0);
         fps_ = this->get_parameter("fps").as_double();
 
+        this->declare_parameter("gyro_scale", 1.0);  // 陀螺仪刻度因子校准, 1.0=不校准
+        gyro_scale_ = this->get_parameter("gyro_scale").as_double();
+        if (gyro_scale_ <= 0.0 || gyro_scale_ > 2.0) {
+            RCLCPP_WARN(this->get_logger(), "gyro_scale=%.3f 不合理，重置为1.0", gyro_scale_);
+            gyro_scale_ = 1.0;
+        }
+
         this->declare_parameter("trigger_interval_deg", 90.0);
         interval_deg_ = this->get_parameter("trigger_interval_deg").as_double();
         if (interval_deg_ <= 0 || interval_deg_ > 360) interval_deg_ = 90.0;
@@ -209,9 +216,9 @@ private:
             RCLCPP_INFO(this->get_logger(), "🟢 首次检测到转动，起停监测已激活 (阈值=%.0fs)", auto_stop_timeout_);
         }
 
-        // 4. 纯粹的数学积分
+        // 4. 纯粹的数学积分 (含陀螺仪刻度因子校准)
         double acc_before = accumulated_;
-        accumulated_ += main_w * dt;
+        accumulated_ += main_w * dt * gyro_scale_;
         last_imu_stamp_ = curr_stamp;
 
         int new_trig = static_cast<int>(std::abs(accumulated_) / interval_rad_);
@@ -533,7 +540,7 @@ private:
         }
     }
 
-    double fps_, interval_deg_, interval_rad_;
+    double fps_, interval_deg_, interval_rad_, gyro_scale_;
     int num_streams_;
     std::string base_dir_;
     std::vector<std::string> stream_dirs_;

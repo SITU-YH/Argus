@@ -78,6 +78,7 @@ def generate_launch_description():
         parameters=[{
             'fps': 10.0,
             'trigger_interval_deg': 90.0,
+            'gyro_scale': 1.005,  # 陀螺仪刻度校准: >1增大积分(提前触发), <1减小(延迟触发)
             'rotate_code': 2,
             'rotation_axis': 1,  # 0=X, 1=Y, 2=Z（根据上次日志,Y 是旋转轴）
             'auto_stop_timeout': 3.0,  # 转台停转 3 秒后自动关闭节点
