@@ -1,17 +1,1 @@
-# 忽略所有编译产物
-build/
-install/
-log/
-
-# 忽略所有临时图片和数据
-trigger_images/
-argus_data/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-
-# 忽略 IDE 缓存
-.vscode/
-.idea/
+data/

@@ -9,6 +9,9 @@ def generate_launch_description():
     
     # 获取 argus 包的绝对路径
     argus_share_dir = get_package_share_directory('argus')
+    # .../install/argus/share/argus → .../install → workspace root
+    ws_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(argus_share_dir))))
+    argus_data_dir = os.path.join(ws_dir, 'src', 'Argus', 'data')
 
     # ==========================================================
     # 1. 启动 Livox
@@ -77,7 +80,8 @@ def generate_launch_description():
             'trigger_interval_deg': 90.0,
             'rotate_code': 2,
             'rotation_axis': 1,  # 0=X, 1=Y, 2=Z（根据上次日志,Y 是旋转轴）
-            'auto_stop_timeout': 3.0  # 转台停转 3 秒后自动关闭节点
+            'auto_stop_timeout': 3.0,  # 转台停转 3 秒后自动关闭节点
+            'output_dir': argus_data_dir  # 输出到 Argus/src/data/ 下
         }]
     )
 
