@@ -15,16 +15,15 @@
 ```
 /livox/imu (200Hz) ──────────┐
                               ├── angle_trigger_node ── 纯积分触发
-/driver/hikvision/            │    ├─ 固定主轴积分 (rotation_axis)
+/driver/hikvision/            │    ├─ 固定主轴积分 + 刻度因子校准
     argus_camera/image_raw ───┘    ├─ 反推插值 + 最近帧匹配
-                                   ├─ BayerRG8 无损存 PNG
+                                   ├─ Bayer 旋转后无损存 PNG
                                    ├─ 起停自动检测
-                                   └─ 析构时合成 MP4
+                                   └─ 析构时合成 AVI 视频
 ```
 
-- `angle_trigger_node`：核心节点（单文件 ~500 行），订阅 Livox 原始 IMU 陀螺仪数据，对指定轴角速度做纯数学积分，在到达预设角度间隔时触发图像采集
-- 原始 Bayer 数据无损保存为 PNG，省 3 倍带宽
-- 图像旋转在后台存图线程中完成（非 Bayer 模式），不阻塞主线程
+- `angle_trigger_node`：核心节点（单文件 ~600 行），订阅 Livox 原始 IMU 陀螺仪数据，对指定轴角速度做纯数学积分，在到达预设角度间隔时触发图像采集
+- 原始 Bayer 数据无损保存为 PNG，旋转在存图线程中完成并更新 Bayer 编码
 - 转台停转后自动收尾：写元数据 → 合成视频 → 退出
 
 ## 目录结构
@@ -111,11 +110,26 @@ ros2 launch argus mapping_trigger.launch.py
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `fps` | 10.0 | 视频合成参考帧率（会被真实时间戳覆盖） |
+| `fps` | 10.0 | 视频合成参考帧率（会被真实时间戳覆盖；解析失败时回退到 2.0） |
 | `trigger_interval_deg` | 90.0 | 触发角度间隔（度），stream 数 = ceil(360/间隔) |
-| `rotation_axis` | 2 | 主旋转轴：0=X, 1=Y, 2=Z（根据雷达安装方向设定） |
+| `rotation_axis` | 1 | 主旋转轴：0=X, 1=Y, 2=Z（根据雷达安装方向设定） |
 | `rotate_code` | 2 | OpenCV 旋转码：0=顺时针90°, 1=180°, 2=逆时针90° |
 | `auto_stop_timeout` | 3.0 | 转台停转多少秒后自动关闭节点，0=禁用 |
+| `gyro_scale` | 1.0 | 陀螺仪刻度因子校准：>1 增大积分量（提前触发），<1 减小（延迟触发） |
+| `deadband` | 0.05 | 死区阈值 (rad/s)，低于此值的角速度视为静止噪声，归零处理 |
+| `output_dir` | "./data" | 数据输出目录 |
+
+### 陀螺仪刻度校准 (`gyro_scale`)
+
+陀螺仪存在固有刻度误差，多圈积分后同一 stream 的首尾帧会出现角度漂移。校准方法：
+
+1. 使用默认 `gyro_scale: 1.0` 采集一圈数据
+2. 对比同一 stream 的第一帧和最后一帧画面
+3. 如果最后一帧画面**顺时针**偏移 → 陀螺仪欠报，调大 `gyro_scale`（如 `1.005`）
+4. 如果最后一帧画面**逆时针**偏移 → 陀螺仪过报，调小 `gyro_scale`（如 `0.995`）
+5. 重复采集验证，直到首尾帧对齐
+
+经验公式：`新值 = 当前值 × (1 + 偏移角度 / (圈数 × 360°))`
 
 ### 相机参数
 
@@ -137,10 +151,10 @@ gain: 8.0                    # 增益 (dB)
 
 ## 输出
 
-采集的图像和数据保存在 `~/argus_data/`：
+采集的图像和数据保存在 `output_dir/<时间戳>/`：
 
 ```
-~/argus_data/
+20260614_103524/
 ├── stream_360/     # 360° (物理 0°) 方向
 │   ├── frame_00000.png          # Bayer → PNG 无损
 │   ├── frame_00001.png
@@ -149,28 +163,28 @@ gain: 8.0                    # 增益 (dB)
 ├── stream_90/      # 90° 方向
 ├── stream_180/     # 180° 方向
 ├── stream_270/     # 270° 方向
-├── video_360deg.mp4
-├── video_90deg.mp4
-├── video_180deg.mp4
-└── video_270deg.mp4
+├── video_360deg.avi
+├── video_90deg.avi
+├── video_180deg.avi
+└── video_270deg.avi
 ```
 
 每个 stream 目录下有一个 `metadata.json` 记录全部帧信息：
 
 ```json
 [
-  {"frame":"frame_00000.png","yaw_deg":360.0,"trigger_ns":1718200000000000000,"encoding":"bayer_rggb8"},
-  {"frame":"frame_00001.png","yaw_deg":720.0,"trigger_ns":1718200012000000000,"encoding":"bayer_rggb8"}
+  {"frame":"frame_00000.png","yaw_deg":360.0,"trigger_ns":1781403028614288453,"encoding":"bayer_grbg8"},
+  {"frame":"frame_00001.png","yaw_deg":720.0,"trigger_ns":1781403032170309102,"encoding":"bayer_grbg8"}
 ]
 ```
 
-`encoding` 字段仅在 Bayer 模式时出现，用于指示下游 debayer 算法应该使用何种 Bayer 排列。
+`encoding` 字段在 Bayer 模式时出现，指示当前帧经过旋转后的 Bayer 排列，用于视频合成时的正确 debayer。
 
 ## 工作原理
 
 ### 角度触发与帧匹配
 
-1. IMU 回调取指定轴角速度（`rotation_axis`），纯数学积分跟踪 `accumulated_`（累计旋转角度），无跳变风险
+1. IMU 回调取指定轴角速度（`rotation_axis`），经死区滤波（`deadband`）后用 `gyro_scale` 校准，纯数学积分跟踪 `accumulated_`
 2. 当累计角度越过 `k × interval_deg` 阈值时，用**反推插值**估算设备实际到达该角度的精确时刻
 3. 图像回调在环形缓冲（60 帧 / 2 秒窗口）中按时间戳查找最接近该时刻的图像帧
 4. 匹配策略：Δt < 300ms 为强匹配；Δt > 300ms 且请求超过 1 秒为弱匹配兜底
@@ -178,16 +192,16 @@ gain: 8.0                    # 增益 (dB)
 
 ### 存图
 
-- Bayer 模式：跳过旋转和色彩转换，直接存 PNGLossless】
-- RGB 模式：支持旋转 + RGB→BGR 转换，存 JPG
+- Bayer 模式：支持旋转原始 Bayer 数据，自动更新 Bayer 编码（`rotate_bayer_encoding`），存无损 PNG
+- 非 Bayer 模式：支持旋转 + RGB→BGR 转换，存 JPG
 
 ### 起停自动检测
 
-节点启动后等待首次检测到转动（`has_rotated_`），之后 1Hz 定时器持续监测。当旋转轴转速低于死区（0.05 rad/s）超过 `auto_stop_timeout` 秒时，自动触发节点关闭 → 析构 → 写 metadata → 合成视频。
+节点启动后等待首次检测到转动（`has_rotated_`），之后 1Hz 定时器持续监测。当旋转轴转速持续低于死区超过 `auto_stop_timeout` 秒时，自动触发节点关闭 → 析构 → 写 metadata → 合成视频。
 
 ### 视频合成
 
-节点退出时，每个 stream 按真实时间戳排序后合成 MP4。Bayer 帧在合成时自动 debayer 为彩色。播放帧率根据实际采集时间跨度自动计算，保证回放速度与采集速度一致。
+节点退出时，每个 stream 按 metadata 中的真实 `trigger_ns` 排序后合成 AVI（MJPG 编码）。Bayer 帧在合成时按 metadata 记录的编码自动 debayer 为彩色。播放帧率根据实际采集时间跨度自动计算，metadata 解析全部失败时回退到 2.0 fps，保证回放速度与采集速度一致。
 
 ## 坐标系
 
