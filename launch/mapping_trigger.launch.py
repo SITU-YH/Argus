@@ -6,12 +6,13 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-    
-    # 获取 argus 包的绝对路径
+
+    # 获取 argus 包的路径
     argus_share_dir = get_package_share_directory('argus')
-    # .../install/argus/share/argus → .../install → workspace root
-    ws_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(argus_share_dir))))
-    argus_data_dir = os.path.join(ws_dir, 'src', 'Argus', 'data')
+    # 通过 launch 文件自身位置找到包根目录 → data/
+    launch_dir = os.path.dirname(os.path.realpath(__file__))  # .../src/Argus/launch
+    pkg_dir = os.path.dirname(launch_dir)                      # .../src/Argus
+    argus_data_dir = os.path.join(pkg_dir, 'data')
 
     # ==========================================================
     # 1. 启动 Livox

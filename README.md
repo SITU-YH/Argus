@@ -117,7 +117,7 @@ ros2 launch argus mapping_trigger.launch.py
 | `auto_stop_timeout` | 3.0 | 转台停转多少秒后自动关闭节点，0=禁用 |
 | `gyro_scale` | 1.0 | 陀螺仪刻度因子校准：>1 增大积分量（提前触发），<1 减小（延迟触发） |
 | `deadband` | 0.05 | 死区阈值 (rad/s)，低于此值的角速度视为静止噪声，归零处理 |
-| `output_dir` | "./data" | 数据输出目录 |
+| `output_dir` | "Argus/data" | 数据输出目录（通过 launch 文件自身位置自动定位到包内 data/） |
 
 ### 陀螺仪刻度校准 (`gyro_scale`)
 
@@ -151,10 +151,10 @@ gain: 8.0                    # 增益 (dB)
 
 ## 输出
 
-采集的图像和数据保存在 `output_dir/<时间戳>/`：
+采集的图像和数据保存在 `Argus/data/<时间戳>/`：
 
 ```
-20260614_103524/
+data/20260614_103524/
 ├── stream_360/     # 360° (物理 0°) 方向
 │   ├── frame_00000.png          # Bayer → PNG 无损
 │   ├── frame_00001.png
